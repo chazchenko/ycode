@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { getAllPages, getPageById, createPage, updatePage, deletePage } from '@/lib/repositories/pageRepository';
 import { getAllPageFolders } from '@/lib/repositories/pageFolderRepository';
+import { upsertDraftLayers } from '@/lib/repositories/pageLayersRepository';
 
 export function registerPageTools(server: McpServer) {
   server.tool(
@@ -41,8 +42,29 @@ export function registerPageTools(server: McpServer) {
       is_dynamic: z.boolean().optional().describe('Set to true for CMS dynamic pages'),
     },
     async (args) => {
-      const slug = args.slug || args.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-      const page = await createPage({ ...args, slug });
+      const isIndex = args.is_index || false;
+      const slug = isIndex ? '' : (args.slug || args.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''));
+
+      const page = await createPage({
+        name: args.name,
+        slug,
+        is_published: false,
+        page_folder_id: args.page_folder_id ?? null,
+        order: 0,
+        depth: 0,
+        is_index: isIndex,
+        is_dynamic: args.is_dynamic || false,
+        error_page: null,
+        settings: {},
+      });
+
+      await upsertDraftLayers(page.id, [{
+        id: 'body',
+        name: 'body',
+        classes: '',
+        children: [],
+      }]);
+
       return { content: [{ type: 'text' as const, text: JSON.stringify(page, null, 2) }] };
     },
   );
