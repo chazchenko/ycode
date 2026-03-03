@@ -18,6 +18,7 @@ import SettingsPanel from './SettingsPanel';
 import RichTextEditor from './RichTextEditor';
 import { filterFieldGroupsByType, flattenFieldGroups, LINK_FIELD_TYPES } from '@/lib/collection-field-utils';
 import { FieldSelectDropdown, type FieldGroup, type FieldSourceType } from './CollectionFieldSelector';
+import ComponentVariableLabel, { VARIABLE_TYPE_ICONS } from './ComponentVariableLabel';
 import {
   Select,
   SelectContent,
@@ -26,16 +27,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuPortal,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import type { Layer, CollectionField, Collection, Page, LinkSettings as LinkSettingsType, LinkType, CollectionItemWithValues, LinkSettingsValue } from '@/types';
 import {
   createDynamicTextVariable,
@@ -135,6 +126,8 @@ export default function LinkSettings(props: LinkSettingsProps) {
   const getAsset = useAssetsStore((state) => state.getAsset);
   const collectionsStoreFields = useCollectionsStore((state) => state.fields);
   const getComponentById = useComponentsStore((state) => state.getComponentById);
+  const addLinkVariable = useComponentsStore((state) => state.addLinkVariable);
+  const updateTextVariable = useComponentsStore((state) => state.updateTextVariable);
 
   // Get component variables for link linking (when editing a component in layer mode)
   const editingComponent = !isStandaloneMode && editingComponentId ? getComponentById(editingComponentId) : undefined;
@@ -603,8 +596,9 @@ export default function LinkSettings(props: LinkSettingsProps) {
       if ((!isStandaloneMode && !layer) || !linkSettings) return;
 
       const newTarget = checked ? '_blank' : '_self';
-      // Also add rel="noopener noreferrer" for security when opening in new tab
-      const newRel = checked ? 'noopener noreferrer' : '';
+      const currentRel = (rel || '').replace(/\b(noopener|noreferrer)\b/g, '').replace(/\s+/g, ' ').trim();
+      const securityTokens = checked ? 'noopener noreferrer' : '';
+      const newRel = [securityTokens, currentRel].filter(Boolean).join(' ');
 
       updateLinkSettings({
         ...linkSettings,
@@ -709,49 +703,23 @@ export default function LinkSettings(props: LinkSettingsProps) {
     <div className={useStackedLayout ? '' : 'grid grid-cols-3 items-center gap-2'}>
       {!isStandaloneMode && (
         <div className="flex items-start gap-1 py-1">
-          {editingComponentId ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="variable"
-                  size="xs"
-                  className="has-[>svg]:px-0"
-                >
-                  <Icon name="plus-circle-solid" />
-                  Type
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                {linkComponentVariables.length > 0 && (
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>Link to variable</DropdownMenuSubTrigger>
-                    <DropdownMenuPortal>
-                      <DropdownMenuSubContent>
-                        {linkComponentVariables.map((variable) => (
-                          <DropdownMenuItem
-                            key={variable.id}
-                            onClick={() => handleLinkLinkVariable(variable.id)}
-                          >
-                            {variable.name}
-                            {linkedLinkVariableId === variable.id && (
-                              <Icon name="check" className="ml-auto size-3" />
-                            )}
-                          </DropdownMenuItem>
-                        ))}
-                      </DropdownMenuSubContent>
-                    </DropdownMenuPortal>
-                  </DropdownMenuSub>
-                )}
-                {onOpenVariablesDialog && (
-                  <DropdownMenuItem onClick={() => onOpenVariablesDialog?.()}>
-                    Manage variables
-                  </DropdownMenuItem>
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <Label className="text-xs text-muted-foreground">Type</Label>
-          )}
+          <ComponentVariableLabel
+            label="Type"
+            isEditingComponent={!!editingComponentId}
+            variables={linkComponentVariables}
+            linkedVariableId={linkedLinkVariableId}
+            onLinkVariable={handleLinkLinkVariable}
+            onManageVariables={() => onOpenVariablesDialog?.()}
+            onCreateVariable={editingComponentId ? async () => {
+              const newId = await addLinkVariable(editingComponentId, 'Link');
+              if (newId) {
+                const currentValue: LinkSettingsValue = { type: 'url', ...linkSettings };
+                await updateTextVariable(editingComponentId, newId, { default_value: currentValue });
+                handleLinkLinkVariable(newId);
+                onOpenVariablesDialog?.(newId);
+              }
+            } : undefined}
+          />
         </div>
       )}
       {isStandaloneMode && !useStackedLayout && typeLabel && (
@@ -766,7 +734,12 @@ export default function LinkSettings(props: LinkSettingsProps) {
             onClick={() => onOpenVariablesDialog?.(linkedLinkVariable.id)}
           >
             <div>
-              <span>{linkedLinkVariable.name}</span>
+              <span className="flex items-center gap-1.5">
+                {linkedLinkVariable.type && VARIABLE_TYPE_ICONS[linkedLinkVariable.type] && (
+                  <Icon name={VARIABLE_TYPE_ICONS[linkedLinkVariable.type]} className="size-3 opacity-60" />
+                )}
+                {linkedLinkVariable.name}
+              </span>
               <Button
                 className="size-4! p-0!"
                 variant="outline"
@@ -883,6 +856,7 @@ export default function LinkSettings(props: LinkSettingsProps) {
           {useStackedLayout && <Label variant="muted" className="mb-1.5">Asset</Label>}
           <div className={useStackedLayout ? '' : 'col-span-2'}>
             <Button
+              type="button"
               variant="secondary"
               size="sm"
               onClick={handleAssetSelect}
@@ -907,6 +881,7 @@ export default function LinkSettings(props: LinkSettingsProps) {
                 value={pageId}
                 onValueChange={handlePageChange}
                 disabled={isLockedByOther}
+                popoverClassName={isStandaloneMode ? 'min-w-[var(--radix-popover-trigger-width)]' : undefined}
               />
             </div>
           </div>

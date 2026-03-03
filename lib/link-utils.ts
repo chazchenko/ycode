@@ -305,8 +305,8 @@ export function resolveFieldLinkValue(options: ResolveFieldLinkOptions): string 
     }
     // SSR: use pre-resolved assets
     if (resolvedAssets?.[rawValue]) {
-      // SVG marker: asset has content but no public URL
-      if (resolvedAssets[rawValue] === '#svg-content') {
+      // Inline SVG content (no URL available for linking)
+      if (resolvedAssets[rawValue].startsWith('<')) {
         return '#no-svg-url';
       }
       return resolvedAssets[rawValue];

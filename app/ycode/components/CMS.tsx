@@ -379,6 +379,7 @@ const CMS = React.memo(function CMS() {
   const folders = usePagesStore((state) => state.folders);
   const timezone = useSettingsStore((state) => state.settingsByKey.timezone as string | null) ?? 'UTC';
   const refetchLayersForCollection = useCollectionLayerStore((state) => state.refetchLayersForCollection);
+  const invalidateLayerData = useCollectionLayerStore((state) => state.invalidateLayerData);
 
   const { urlState, navigateToCollection, navigateToCollectionItem, navigateToNewCollectionItem, navigateToCollections } = useEditorUrl();
 
@@ -861,6 +862,7 @@ const CMS = React.memo(function CMS() {
         }
         // Reload current page to sync pagination and pull remaining items forward
         loadItems(selectedCollectionId, currentPage, pageSize, currentSortBy, currentSortOrder);
+        invalidateLayerData(selectedCollectionId);
       })
       .catch((error) => {
         console.error('Failed to delete item:', error);
@@ -955,7 +957,8 @@ const CMS = React.memo(function CMS() {
       await reorderItems(selectedCollectionId, updates);
       // Reset to page 1 after reordering to show the new order
       setCurrentPage(1);
-      // Refetch collection layers on the canvas to reflect new order
+      // Invalidate + refetch collection layers on the canvas to reflect new order
+      invalidateLayerData(selectedCollectionId);
       refetchLayersForCollection(selectedCollectionId);
     } catch (error) {
       console.error('Failed to reorder items:', error);
@@ -1077,6 +1080,7 @@ const CMS = React.memo(function CMS() {
 
         // Reload current page to sync pagination and pull remaining items forward
         loadItems(selectedCollectionId, currentPage, pageSize, currentSortBy, currentSortOrder);
+        invalidateLayerData(selectedCollectionId);
       })
       .catch((error) => {
         console.error('Failed to delete items:', error);

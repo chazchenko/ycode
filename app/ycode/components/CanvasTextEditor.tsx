@@ -13,10 +13,12 @@
 import React, { useEffect, useMemo, useCallback, forwardRef, useImperativeHandle, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useEditor, EditorContent } from '@tiptap/react';
-import { Node, Mark, mergeAttributes } from '@tiptap/core';
+import { Mark, mergeAttributes } from '@tiptap/core';
 import Document from '@tiptap/extension-document';
 import Text from '@tiptap/extension-text';
 import Paragraph from '@tiptap/extension-paragraph';
+import History from '@tiptap/extension-history';
+import { EditorState } from '@tiptap/pm/state';
 import Bold from '@tiptap/extension-bold';
 import Italic from '@tiptap/extension-italic';
 import Underline from '@tiptap/extension-underline';
@@ -37,6 +39,8 @@ import {
   parseValueToContent,
   getVariableLabel,
 } from '@/lib/cms-variables-utils';
+import { DynamicVariable, getDynamicVariableLabel } from '@/lib/tiptap-extensions/dynamic-variable';
+import { RichTextComponent } from '@/lib/tiptap-extensions/rich-text-component';
 import { useCanvasTextEditorStore } from '@/stores/useCanvasTextEditorStore';
 import { RichTextLink } from '@/lib/tiptap-extensions/rich-text-link';
 import { useEditorStore } from '@/stores/useEditorStore';
@@ -69,60 +73,10 @@ export interface CanvasTextEditorHandle {
 }
 
 /**
- * Custom Tiptap node for inline field variables
+ * DynamicVariable with React node view for the canvas text editor.
+ * Extends the shared extension with canvas-specific Badge styling.
  */
-const DynamicVariable = Node.create({
-  name: 'dynamicVariable',
-  group: 'inline',
-  inline: true,
-  atom: true,
-
-  addAttributes() {
-    return {
-      variable: {
-        default: null,
-        parseHTML: (element) => {
-          const variableAttr = element.getAttribute('data-variable');
-          if (variableAttr) {
-            try {
-              return JSON.parse(variableAttr);
-            } catch {
-              return null;
-            }
-          }
-          return null;
-        },
-        renderHTML: (attributes) => {
-          if (!attributes) return {};
-          return { 'data-variable': JSON.stringify(attributes) };
-        },
-      },
-      label: {
-        default: null,
-        parseHTML: (element) => element.textContent || null,
-      },
-    };
-  },
-
-  parseHTML() {
-    return [{ tag: 'span[data-variable]' }];
-  },
-
-  renderHTML({ node, HTMLAttributes }) {
-    const label = node.attrs.label ||
-      node.attrs.variable?.data?.field_id ||
-      node.attrs.variable?.type || 'variable';
-
-    return [
-      'span',
-      mergeAttributes(HTMLAttributes, {
-        class: 'inline-flex items-center gap-1 rounded-sm border px-1.5 py-0 text-[10px] font-medium whitespace-nowrap shrink-0 border-transparent bg-gray-100 text-gray-600 mx-0.5',
-        'data-variable': node.attrs.variable ? JSON.stringify(node.attrs.variable) : undefined,
-      }),
-      ['span', {}, label],
-    ];
-  },
-
+const DynamicVariableWithNodeView = DynamicVariable.extend({
   addNodeView() {
     return ({ node, getPos, editor }) => {
       const container = document.createElement('span');
@@ -134,9 +88,7 @@ const DynamicVariable = Node.create({
         container.setAttribute('data-variable', JSON.stringify(variable));
       }
 
-      const label = node.attrs.label ||
-        variable?.data?.field_id ||
-        variable?.type || 'variable';
+      const label = getDynamicVariableLabel(node);
 
       const handleDelete = () => {
         const pos = getPos();
@@ -440,7 +392,9 @@ const CanvasTextEditor = forwardRef<CanvasTextEditorHandle, CanvasTextEditorProp
     Document,
     createParagraphExtension(textStylesRef.current),
     Text,
-    DynamicVariable,
+    History,
+    DynamicVariableWithNodeView,
+    RichTextComponent,
     createRichTextLinkExtension(textStylesRef.current),
     createBoldExtension(textStylesRef.current),
     createItalicExtension(textStylesRef.current),
@@ -504,6 +458,14 @@ const CanvasTextEditor = forwardRef<CanvasTextEditorHandle, CanvasTextEditorProp
         const { from, to } = editorInstance.state.selection;
         savedSelectionRef.current = { from, to };
       }
+    },
+    onCreate: ({ editor: editorInstance }) => {
+      // Reset editor state to clear history so initial content isn't undoable
+      const { state } = editorInstance;
+      editorInstance.view.updateState(EditorState.create({
+        doc: state.doc,
+        plugins: state.plugins,
+      }));
     },
     onBlur: ({ editor: editorInstance }) => {
       // Save cursor position when editor loses focus

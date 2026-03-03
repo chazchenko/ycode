@@ -8,7 +8,23 @@ import type { Layer, Component } from '@/types';
 import { regenerateIdsWithInteractionRemapping } from './layer-utils';
 
 /**
- * Collect all component IDs referenced in a layer tree
+ * Extract component IDs from Tiptap JSON content (richTextComponent nodes).
+ */
+function collectComponentIdsFromTiptap(node: any, ids: Set<string>) {
+  if (!node || typeof node !== 'object') return;
+  if (node.type === 'richTextComponent' && node.attrs?.componentId) {
+    ids.add(node.attrs.componentId);
+  }
+  if (Array.isArray(node.content)) {
+    for (const child of node.content) {
+      collectComponentIdsFromTiptap(child, ids);
+    }
+  }
+}
+
+/**
+ * Collect all component IDs referenced in a layer tree,
+ * including components embedded in rich-text content.
  */
 export function collectComponentIds(layers: Layer[]): Set<string> {
   const ids = new Set<string>();
@@ -18,6 +34,24 @@ export function collectComponentIds(layers: Layer[]): Set<string> {
       if (layer.componentId) {
         ids.add(layer.componentId);
       }
+
+      // Scan rich-text content for embedded components
+      const textVar = layer.variables?.text;
+      if (textVar && 'data' in textVar && (textVar as any).data?.content) {
+        collectComponentIdsFromTiptap((textVar as any).data.content, ids);
+      }
+
+      // Scan component override text values
+      const overrideTexts = layer.componentOverrides?.text;
+      if (overrideTexts) {
+        for (const val of Object.values(overrideTexts)) {
+          const content = (val as any)?.data?.content;
+          if (content && typeof content === 'object') {
+            collectComponentIdsFromTiptap(content, ids);
+          }
+        }
+      }
+
       if (layer.children && layer.children.length > 0) {
         traverse(layer.children);
       }
@@ -39,6 +73,17 @@ export function buildComponentDependencyGraph(
 
   for (const component of components) {
     const dependencies = collectComponentIds(component.layers || []);
+
+    // Also scan variable default values for embedded components
+    if (component.variables) {
+      for (const variable of component.variables) {
+        const content = (variable.default_value as any)?.data?.content;
+        if (content && typeof content === 'object') {
+          collectComponentIdsFromTiptap(content, dependencies);
+        }
+      }
+    }
+
     graph.set(component.id, dependencies);
   }
 
@@ -86,6 +131,17 @@ export function wouldCreateCircularReference(
   }
 
   return { wouldCycle: false };
+}
+
+/** Check if embedding `componentId` inside `editingComponentId` would create a cycle. */
+export function isCircularComponentReference(
+  editingComponentId: string,
+  componentId: string,
+  components: Component[],
+): boolean {
+  if (componentId === editingComponentId) return true;
+  const fakeLayer = { id: '_check', name: 'div', componentId } as Layer;
+  return wouldCreateCircularReference(editingComponentId, [fakeLayer], components).wouldCycle;
 }
 
 /**

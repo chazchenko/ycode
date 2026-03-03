@@ -4,7 +4,185 @@
  * Applies component variable overrides during resolution
  */
 
-import type { Layer, Component, ComponentVariable } from '@/types';
+import type { Layer, Component, ComponentVariable, ComponentVariableValue, LayerVariables } from '@/types';
+
+/**
+ * Remap collection_layer_id in a FieldVariable using the ID map.
+ * Returns a new object if remapped, or the original if unchanged.
+ */
+function remapFieldVariable(fv: any, idMap: Map<string, string>): any {
+  if (fv?.type !== 'field' || !fv?.data?.collection_layer_id) return fv;
+  const mapped = idMap.get(fv.data.collection_layer_id);
+  if (!mapped) return fv;
+  return { ...fv, data: { ...fv.data, collection_layer_id: mapped } };
+}
+
+/**
+ * Remap collection_layer_id references in DesignColorVariable fields/stops.
+ */
+function remapDesignColor(dcv: any, idMap: Map<string, string>): any {
+  if (!dcv || dcv.type !== 'color') return dcv;
+  let changed = false;
+  const result = { ...dcv };
+  if (dcv.field) {
+    const remapped = remapFieldVariable(dcv.field, idMap);
+    if (remapped !== dcv.field) { result.field = remapped; changed = true; }
+  }
+  for (const key of ['linear', 'radial'] as const) {
+    if (dcv[key]?.stops?.length) {
+      const newStops = dcv[key].stops.map((s: any) => {
+        if (!s.field) return s;
+        const rf = remapFieldVariable(s.field, idMap);
+        if (rf !== s.field) { changed = true; return { ...s, field: rf }; }
+        return s;
+      });
+      if (changed) result[key] = { ...dcv[key], stops: newStops };
+    }
+  }
+  return changed ? result : dcv;
+}
+
+/**
+ * Remap collection_layer_id inside inline variable JSON tags and Tiptap rich text nodes.
+ */
+function remapCollectionLayerIdsInContent(content: any, idMap: Map<string, string>): any {
+  if (typeof content === 'string') {
+    // Remap in inline variable tags: <ycode-inline-variable>{"...collection_layer_id":"old"...}</ycode-inline-variable>
+    return content.replace(
+      /<ycode-inline-variable>([\s\S]*?)<\/ycode-inline-variable>/g,
+      (match, inner) => {
+        try {
+          const parsed = JSON.parse(inner.trim());
+          const clid = parsed?.data?.collection_layer_id;
+          if (clid && idMap.has(clid)) {
+            parsed.data.collection_layer_id = idMap.get(clid);
+            return `<ycode-inline-variable>${JSON.stringify(parsed)}</ycode-inline-variable>`;
+          }
+        } catch { /* not valid JSON, leave as-is */ }
+        return match;
+      }
+    );
+  }
+  // Tiptap JSON: walk nodes and remap dynamicVariable attrs
+  if (content && typeof content === 'object') {
+    return remapTiptapNodes(content, idMap);
+  }
+  return content;
+}
+
+/** Recursively remap collection_layer_id in Tiptap JSON tree */
+function remapTiptapNodes(node: any, idMap: Map<string, string>): any {
+  if (!node || typeof node !== 'object') return node;
+  let changed = false;
+  let result = node;
+
+  if (node.attrs?.variable?.data?.collection_layer_id) {
+    const clid = node.attrs.variable.data.collection_layer_id;
+    const mapped = idMap.get(clid);
+    if (mapped) {
+      result = {
+        ...node,
+        attrs: {
+          ...node.attrs,
+          variable: {
+            ...node.attrs.variable,
+            data: { ...node.attrs.variable.data, collection_layer_id: mapped },
+          },
+        },
+      };
+      changed = true;
+    }
+  }
+
+  if (Array.isArray(node.content)) {
+    const newContent = node.content.map((child: any) => remapTiptapNodes(child, idMap));
+    if (newContent.some((c: any, i: number) => c !== node.content[i])) {
+      result = { ...(changed ? result : node), content: newContent };
+    }
+  }
+  return result;
+}
+
+/**
+ * Remap all collection_layer_id references in a layer's variables.
+ * Ensures layerDataMap lookups match transformed collection layer IDs.
+ */
+function remapVariableCollectionLayerIds(vars: LayerVariables, idMap: Map<string, string>): LayerVariables {
+  let changed = false;
+  const result: LayerVariables = { ...vars };
+
+  // Text content (inline variables in dynamic_text, Tiptap nodes in dynamic_rich_text)
+  if (vars.text) {
+    const tv = vars.text as any;
+    if (tv.type === 'dynamic_text' && typeof tv.data?.content === 'string' && tv.data.content.includes('collection_layer_id')) {
+      const newContent = remapCollectionLayerIdsInContent(tv.data.content, idMap);
+      if (newContent !== tv.data.content) {
+        result.text = { ...tv, data: { ...tv.data, content: newContent } } as any;
+        changed = true;
+      }
+    } else if (tv.type === 'dynamic_rich_text' && tv.data?.content) {
+      const newContent = remapCollectionLayerIdsInContent(tv.data.content, idMap);
+      if (newContent !== tv.data.content) {
+        result.text = { ...tv, data: { ...tv.data, content: newContent } } as any;
+        changed = true;
+      }
+    }
+  }
+
+  // Image src
+  if (vars.image?.src) {
+    const r = remapFieldVariable(vars.image.src, idMap);
+    if (r !== vars.image.src) { result.image = { ...vars.image, src: r }; changed = true; }
+  }
+
+  // Audio src
+  if (vars.audio?.src) {
+    const r = remapFieldVariable(vars.audio.src, idMap);
+    if (r !== vars.audio.src) { result.audio = { ...vars.audio, src: r }; changed = true; }
+  }
+
+  // Video src + poster
+  if (vars.video) {
+    let videoChanged = false;
+    const newVideo = { ...vars.video };
+    if (vars.video.src) {
+      const r = remapFieldVariable(vars.video.src, idMap);
+      if (r !== vars.video.src) { newVideo.src = r; videoChanged = true; }
+    }
+    if (vars.video.poster) {
+      const r = remapFieldVariable(vars.video.poster, idMap);
+      if (r !== vars.video.poster) { newVideo.poster = r; videoChanged = true; }
+    }
+    if (videoChanged) { result.video = newVideo; changed = true; }
+  }
+
+  // Background image src
+  if (vars.backgroundImage?.src) {
+    const r = remapFieldVariable(vars.backgroundImage.src, idMap);
+    if (r !== vars.backgroundImage.src) { result.backgroundImage = { ...vars.backgroundImage, src: r }; changed = true; }
+  }
+
+  // Link field
+  if (vars.link?.field) {
+    const r = remapFieldVariable(vars.link.field, idMap);
+    if (r !== vars.link.field) { result.link = { ...vars.link, field: r }; changed = true; }
+  }
+
+  // Design color bindings
+  if (vars.design) {
+    let designChanged = false;
+    const newDesign = { ...vars.design };
+    for (const key of ['backgroundColor', 'color', 'borderColor', 'divideColor', 'textDecorationColor'] as const) {
+      if (vars.design[key]) {
+        const r = remapDesignColor(vars.design[key], idMap);
+        if (r !== vars.design[key]) { (newDesign as any)[key] = r; designChanged = true; }
+      }
+    }
+    if (designChanged) { result.design = newDesign; changed = true; }
+  }
+
+  return changed ? result : vars;
+}
 
 /**
  * Transform layer IDs to be instance-specific to ensure unique IDs per component instance.
@@ -13,14 +191,14 @@ import type { Layer, Component, ComponentVariable } from '@/types';
  * @param instanceLayerId - The component instance's layer ID used as namespace
  * @returns Transformed layers with remapped IDs and interaction references
  */
-function transformLayerIdsForInstance(layers: Layer[], instanceLayerId: string): Layer[] {
+export function transformLayerIdsForInstance(layers: Layer[], instanceLayerId: string): Layer[] {
   // Build ID map: original ID -> instance-specific ID
   const idMap = new Map<string, string>();
-  
+
   // First pass: collect all layer IDs and generate new ones
   const collectIds = (layerList: Layer[]) => {
     for (const layer of layerList) {
-      const newId = `${instanceLayerId}_${layer.id}`;
+      const newId = `${instanceLayerId}-${layer.id}`;
       idMap.set(layer.id, newId);
       if (layer.children) {
         collectIds(layer.children);
@@ -28,45 +206,120 @@ function transformLayerIdsForInstance(layers: Layer[], instanceLayerId: string):
     }
   };
   collectIds(layers);
-  
+
   // Second pass: transform layers with new IDs and remapped interactions
   const transformLayer = (layer: Layer): Layer => {
     const newId = idMap.get(layer.id) || layer.id;
-    
+
     const transformedLayer: Layer = {
       ...layer,
       id: newId,
     };
-    
+
     // Remap interaction IDs and tween layer_id references
     // Interaction IDs must be unique per instance to prevent timeline caching issues
     if (layer.interactions && layer.interactions.length > 0) {
       transformedLayer.interactions = layer.interactions.map(interaction => ({
         ...interaction,
-        id: `${instanceLayerId}_${interaction.id}`,
+        id: `${instanceLayerId}-${interaction.id}`,
         tweens: interaction.tweens.map(tween => ({
           ...tween,
           layer_id: idMap.get(tween.layer_id) || tween.layer_id,
         })),
       }));
     }
-    
+
+    // Remap collection_layer_id references in field variables so
+    // layerDataMap lookups match the transformed collection layer IDs
+    if (layer.variables) {
+      transformedLayer.variables = remapVariableCollectionLayerIds(layer.variables, idMap);
+    }
+
     // Recursively transform children
     if (layer.children) {
       transformedLayer.children = layer.children.map(transformLayer);
     }
-    
+
     return transformedLayer;
   };
-  
+
   return layers.map(transformLayer);
+}
+
+type OverrideCategory = Exclude<keyof NonNullable<Layer['componentOverrides']>, 'variableLinks'>;
+
+const OVERRIDE_CATEGORIES: OverrideCategory[] = [
+  'text',
+  'image',
+  'link',
+  'audio',
+  'video',
+  'icon',
+];
+
+function findOverrideByVariableId(
+  overrides: Layer['componentOverrides'] | undefined,
+  variableId: string,
+): { category: OverrideCategory; value: ComponentVariableValue } | undefined {
+  if (!overrides) return undefined;
+
+  for (const category of OVERRIDE_CATEGORIES) {
+    const categoryOverrides = overrides[category];
+    if (categoryOverrides?.[variableId] !== undefined) {
+      return { category, value: categoryOverrides[variableId] };
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Resolve variableLinks on a component instance's overrides using the parent context.
+ * Returns new overrides with linked values resolved from the parent's overrides/defaults.
+ */
+export function resolveVariableLinks(
+  instanceOverrides: Layer['componentOverrides'] | undefined,
+  parentOverrides: Layer['componentOverrides'] | undefined,
+  parentVariables: ComponentVariable[] | undefined,
+): Layer['componentOverrides'] | undefined {
+  const links = instanceOverrides?.variableLinks;
+  if (!links || Object.keys(links).length === 0) return instanceOverrides;
+
+  const resolved = { ...instanceOverrides };
+
+  for (const [childVarId, parentVarId] of Object.entries(links)) {
+    const parentVar = parentVariables?.find(v => v.id === parentVarId);
+    let resolvedCategory: OverrideCategory | undefined;
+    let resolvedValue: ComponentVariableValue | undefined;
+
+    if (parentVar) {
+      const category = (parentVar.type || 'text') as OverrideCategory;
+      resolvedCategory = category;
+      resolvedValue = parentOverrides?.[category]?.[parentVarId] ?? parentVar.default_value;
+    } else {
+      const overrideMatch = findOverrideByVariableId(parentOverrides, parentVarId);
+      if (overrideMatch) {
+        resolvedCategory = overrideMatch.category;
+        resolvedValue = overrideMatch.value;
+      }
+    }
+
+    if (resolvedCategory && resolvedValue !== undefined) {
+      resolved[resolvedCategory] = {
+        ...(resolved[resolvedCategory] ?? {}),
+        [childVarId]: resolvedValue,
+      };
+    }
+  }
+
+  return resolved;
 }
 
 /**
  * Apply component variable overrides (or defaults) to layers
  * Recursively finds layers with linked variables and applies override or default values
  */
-function applyComponentOverrides(
+export function applyComponentOverrides(
   layers: Layer[],
   overrides?: Layer['componentOverrides'],
   componentVariables?: ComponentVariable[]
@@ -81,7 +334,7 @@ function applyComponentOverrides(
       const overrideValue = overrides?.text?.[linkedTextVariableId];
       const variableDef = componentVariables?.find(v => v.id === linkedTextVariableId);
       const valueToApply = overrideValue ?? variableDef?.default_value;
-      
+
       // Only apply if it's a text variable (has 'type' property, not ImageSettingsValue)
       if (valueToApply && 'type' in valueToApply) {
         // Apply the value to this layer's text variable
@@ -102,7 +355,7 @@ function applyComponentOverrides(
       const overrideValue = overrides?.image?.[linkedImageVariableId];
       const variableDef = componentVariables?.find(v => v.id === linkedImageVariableId);
       const imageValue = (overrideValue ?? variableDef?.default_value) as any;
-      
+
       if (imageValue) {
         // Apply the value to this layer's image variable
         updatedLayer = {
@@ -231,6 +484,18 @@ function applyComponentOverrides(
       }
     }
 
+    // Resolve variableLinks on nested component overrides
+    if (updatedLayer.componentOverrides?.variableLinks) {
+      updatedLayer = {
+        ...updatedLayer,
+        componentOverrides: resolveVariableLinks(
+          updatedLayer.componentOverrides,
+          overrides,
+          componentVariables,
+        ),
+      };
+    }
+
     // Recursively process children
     if (updatedLayer.children) {
       updatedLayer.children = applyComponentOverrides(updatedLayer.children, overrides, componentVariables);
@@ -257,10 +522,23 @@ function tagLayersWithComponentId(layers: Layer[], componentId: string): Layer[]
  * Recursively resolve component instances in a layer tree
  * @param layers - The layer tree to process
  * @param components - Array of available components
+ * @param parentComponentVariables - Variables of the parent component (for variableLinks resolution)
+ * @param parentOverrides - Overrides from the parent component instance (for variableLinks resolution)
  * @returns Layer tree with components resolved
  */
-export function resolveComponents(layers: Layer[], components: Component[]): Layer[] {
-  return layers.map(layer => {
+export function resolveComponents(
+  layers: Layer[],
+  components: Component[],
+  parentComponentVariables?: ComponentVariable[],
+  parentOverrides?: Layer['componentOverrides'],
+): Layer[] {
+  // Resolve variableLinks at this level first so nested instances
+  // get the correct overrides before their children are resolved
+  const effectiveLayers = parentComponentVariables?.length
+    ? applyComponentOverrides(layers, parentOverrides, parentComponentVariables)
+    : layers;
+
+  return effectiveLayers.map(layer => {
     // If this layer is a component instance, populate its children from the component
     if (layer.componentId) {
       const component = components.find(c => c.id === layer.componentId);
@@ -269,9 +547,10 @@ export function resolveComponents(layers: Layer[], components: Component[]): Lay
         // The component's first layer is the actual content (Section, etc.)
         const componentContent = component.layers[0];
 
-        // Recursively resolve nested components
+        // Recursively resolve nested components, passing current component's
+        // variables and this instance's overrides so nested variableLinks resolve correctly
         const nestedResolved = componentContent.children
-          ? resolveComponents(componentContent.children, components)
+          ? resolveComponents(componentContent.children, components, component.variables, layer.componentOverrides)
           : [];
 
         // Apply component variable overrides (or defaults) before tagging
@@ -319,7 +598,7 @@ export function resolveComponents(layers: Layer[], components: Component[]): Lay
     if (layer.children?.length) {
       return {
         ...layer,
-        children: resolveComponents(layer.children, components),
+        children: resolveComponents(layer.children, components, parentComponentVariables, parentOverrides),
       };
     }
 

@@ -8,7 +8,7 @@ import EditingIndicator from '@/components/collaboration/EditingIndicator';
 import { useCollaborationPresenceStore, getResourceLockKey, RESOURCE_TYPES } from '@/stores/useCollaborationPresenceStore';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useLocalisationStore } from '@/stores/useLocalisationStore';
-import type { Layer, Locale, ComponentVariable, FormSettings, LinkSettings, Breakpoint, CollectionItemWithValues } from '@/types';
+import type { Layer, Locale, ComponentVariable, FormSettings, LinkSettings, Breakpoint, CollectionItemWithValues, Component } from '@/types';
 import type { UseLiveLayerUpdatesReturn } from '@/hooks/use-live-layer-updates';
 import type { UseLiveComponentUpdatesReturn } from '@/hooks/use-live-component-updates';
 import { getLayerHtmlTag, getClassesString, getText, resolveFieldValue, isTextEditable, getCollectionVariable, evaluateVisibility } from '@/lib/layer-utils';
@@ -24,11 +24,13 @@ import { generateImageSrcset, getImageSizes, getOptimizedImageUrl } from '@/lib/
 import { useEditorStore } from '@/stores/useEditorStore';
 import { toast } from 'sonner';
 import { resolveInlineVariablesFromData } from '@/lib/inline-variables';
-import { renderRichText, hasBlockElements, hasBlockElementsWithInlineVariables, getTextStyleClasses, type RichTextLinkContext } from '@/lib/text-format-utils';
+import { renderRichText, hasBlockElementsWithInlineVariables, getTextStyleClasses, type RichTextLinkContext, type RenderComponentBlockFn } from '@/lib/text-format-utils';
+import { hasComponentOrVariable } from '@/lib/tiptap-utils';
 import LayerContextMenu from '@/app/ycode/components/LayerContextMenu';
 import CanvasTextEditor from '@/app/ycode/components/CanvasTextEditor';
 import { useComponentsStore } from '@/stores/useComponentsStore';
 import { useCollectionLayerStore } from '@/stores/useCollectionLayerStore';
+import { useFilterStore } from '@/stores/useFilterStore';
 import { useCollectionsStore } from '@/stores/useCollectionsStore';
 import { useAssetsStore } from '@/stores/useAssetsStore';
 import { ShimmerSkeleton } from '@/components/ui/shimmer-skeleton';
@@ -36,72 +38,16 @@ import { combineBgValues, mergeStaticBgVars } from '@/lib/tailwind-class-mapper'
 import { clsx } from 'clsx';
 import PaginatedCollection from '@/components/PaginatedCollection';
 import LoadMoreCollection from '@/components/LoadMoreCollection';
+import FilterableCollection from '@/components/FilterableCollection';
 import LocaleSelector from '@/components/layers/LocaleSelector';
 import { usePagesStore } from '@/stores/usePagesStore';
 import { useSettingsStore } from '@/stores/useSettingsStore';
 import { generateLinkHref, type LinkResolutionContext } from '@/lib/link-utils';
 import type { HiddenLayerInfo } from '@/lib/animation-utils';
+import AnimationInitializer from '@/components/AnimationInitializer';
+import { transformLayerIdsForInstance, resolveVariableLinks } from '@/lib/resolve-components';
 
 import type { DesignColorVariable } from '@/types';
-
-/**
- * Transform component layers for a specific instance.
- * Generates unique layer IDs by combining the instance layer ID with original layer IDs.
- * Also remaps interaction tween layer_id references to use the new IDs.
- * This ensures each component instance has unique IDs for proper animation targeting.
- */
-function transformComponentLayersForInstance(
-  layers: Layer[],
-  instanceLayerId: string
-): Layer[] {
-  // Build ID map: original ID -> instance-specific ID
-  const idMap = new Map<string, string>();
-
-  // First pass: collect all layer IDs and generate new ones
-  const collectIds = (layerList: Layer[]) => {
-    for (const layer of layerList) {
-      // Create a deterministic instance-specific ID
-      const newId = `${instanceLayerId}_${layer.id}`;
-      idMap.set(layer.id, newId);
-      if (layer.children) {
-        collectIds(layer.children);
-      }
-    }
-  };
-  collectIds(layers);
-
-  // Second pass: transform layers with new IDs and remapped interactions
-  const transformLayer = (layer: Layer): Layer => {
-    const newId = idMap.get(layer.id) || layer.id;
-
-    const transformedLayer: Layer = {
-      ...layer,
-      id: newId,
-    };
-
-    // Remap interaction IDs and tween layer_id references
-    // Interaction IDs must be unique per instance to prevent timeline caching issues
-    if (layer.interactions && layer.interactions.length > 0) {
-      transformedLayer.interactions = layer.interactions.map(interaction => ({
-        ...interaction,
-        id: `${instanceLayerId}_${interaction.id}`,
-        tweens: interaction.tweens.map(tween => ({
-          ...tween,
-          layer_id: idMap.get(tween.layer_id) || tween.layer_id,
-        })),
-      }));
-    }
-
-    // Recursively transform children
-    if (layer.children) {
-      transformedLayer.children = layer.children.map(transformLayer);
-    }
-
-    return transformedLayer;
-  };
-
-  return layers.map(transformLayer);
-}
 
 /**
  * Build a map of layerId -> anchor value (attributes.id) for O(1) anchor resolution
@@ -166,6 +112,10 @@ interface LayerRendererProps {
   anchorMap?: Record<string, string>; // Pre-built map of layerId -> anchor value for O(1) lookups
   /** Pre-resolved asset URLs (asset_id -> public_url) for SSR link resolution */
   resolvedAssets?: Record<string, string>;
+  /** Components for resolving embedded component nodes in rich-text (preview/published) */
+  components?: Component[];
+  /** Component IDs in the rendering chain, used to prevent circular loops through collection rich-text data */
+  ancestorComponentIds?: Set<string>;
 }
 
 const LayerRenderer: React.FC<LayerRendererProps> = ({
@@ -207,6 +157,8 @@ const LayerRenderer: React.FC<LayerRendererProps> = ({
   translations,
   anchorMap: anchorMapProp,
   resolvedAssets,
+  components: componentsProp,
+  ancestorComponentIds,
 }) => {
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
   const [editingContent, setEditingContent] = useState<string>('');
@@ -231,38 +183,63 @@ const LayerRenderer: React.FC<LayerRendererProps> = ({
     if (layer.name === '_fragment' && layer.children) {
       const renderedChildren = layer.children.map((child: Layer) => renderLayer(child));
 
-      // If this fragment has pagination metadata and we're in published mode,
-      // wrap it with the appropriate pagination component
-      if (layer._paginationMeta && isPublished) {
-        // Extract the original layer ID from the fragment ID (remove -fragment suffix)
-        const originalLayerId = layer.id.replace(/-fragment$/, '');
-        const paginationMode = layer._paginationMeta.mode || 'pages';
+      const originalLayerId = layer.id.replace(/-fragment$/, '');
+      const hasFilter = layer._filterConfig && !isEditMode;
+      const hasPagination = layer._paginationMeta && isPublished;
 
-        if (paginationMode === 'load_more') {
-          // Use LoadMoreCollection for "Load More" mode
-          return (
-            <Suspense key={layer.id} fallback={<div className="animate-pulse bg-gray-200 rounded h-32" />}>
+      if (hasPagination || hasFilter) {
+        let content: React.ReactNode = renderedChildren;
+
+        // Inner layer: pagination wraps the SSR items
+        if (hasPagination) {
+          const paginationMode = layer._paginationMeta!.mode || 'pages';
+
+          if (paginationMode === 'load_more') {
+            content = (
               <LoadMoreCollection
-                paginationMeta={layer._paginationMeta}
+                paginationMeta={layer._paginationMeta!}
                 collectionLayerId={originalLayerId}
-                itemIds={layer._paginationMeta.itemIds}
-                layerTemplate={layer._paginationMeta.layerTemplate}
+                itemIds={layer._paginationMeta!.itemIds}
+                layerTemplate={layer._paginationMeta!.layerTemplate}
               >
-                {renderedChildren}
+                {content}
               </LoadMoreCollection>
-            </Suspense>
+            );
+          } else {
+            content = (
+              <PaginatedCollection
+                paginationMeta={layer._paginationMeta!}
+                collectionLayerId={originalLayerId}
+              >
+                {content}
+              </PaginatedCollection>
+            );
+          }
+        }
+
+        // Outer layer: FilterableCollection swaps content when filters are active
+        if (hasFilter) {
+          content = (
+            <FilterableCollection
+              collectionId={layer._filterConfig!.collectionId}
+              collectionLayerId={layer._filterConfig!.collectionLayerId}
+              filters={layer._filterConfig!.filters}
+              sortBy={layer._filterConfig!.sortBy}
+              sortOrder={layer._filterConfig!.sortOrder}
+              sortByInputLayerId={layer._filterConfig!.sortByInputLayerId}
+              sortOrderInputLayerId={layer._filterConfig!.sortOrderInputLayerId}
+              limit={layer._filterConfig!.limit}
+              paginationMode={layer._filterConfig!.paginationMode}
+              layerTemplate={layer._filterConfig!.layerTemplate}
+            >
+              {content}
+            </FilterableCollection>
           );
         }
 
-        // Default: Use PaginatedCollection for "Pages" mode
         return (
           <Suspense key={layer.id} fallback={<div className="animate-pulse bg-gray-200 rounded h-32" />}>
-            <PaginatedCollection
-              paginationMeta={layer._paginationMeta}
-              collectionLayerId={originalLayerId}
-            >
-              {renderedChildren}
-            </PaginatedCollection>
+            {content}
           </Suspense>
         );
       }
@@ -317,6 +294,8 @@ const LayerRenderer: React.FC<LayerRendererProps> = ({
         translations={translations}
         anchorMap={anchorMap}
         resolvedAssets={resolvedAssets}
+        components={componentsProp}
+        ancestorComponentIds={ancestorComponentIds}
       />
     );
   };
@@ -374,6 +353,8 @@ const LayerItem: React.FC<{
   translations?: Record<string, any> | null; // Translations for localized URL generation
   anchorMap?: Record<string, string>; // Pre-built map of layerId -> anchor value
   resolvedAssets?: Record<string, string>;
+  components?: Component[];
+  ancestorComponentIds?: Set<string>;
 }> = ({
   layer,
   isEditMode,
@@ -419,6 +400,8 @@ const LayerItem: React.FC<{
   translations,
   anchorMap,
   resolvedAssets,
+  components: componentsProp,
+  ancestorComponentIds,
 }) => {
   const isSelected = selectedLayerId === layer.id;
   const isHovered = hoveredLayerId === layer.id;
@@ -443,6 +426,13 @@ const LayerItem: React.FC<{
     ...layerDataMap,
     ...(layer._layerDataMap || {}),
   }), [layerDataMap, layer._layerDataMap]);
+  // Track component scope for circular reference detection (works in both edit and published modes)
+  const effectiveAncestorIds = useMemo(() => {
+    if (!layer.componentId) return ancestorComponentIds;
+    const set = new Set(ancestorComponentIds);
+    set.add(layer.componentId);
+    return set;
+  }, [ancestorComponentIds, layer.componentId]);
   const getAssetFromStore = useAssetsStore((state) => state.getAsset);
   const assetsById = useAssetsStore((state) => state.assetsById);
   const timezone = useSettingsStore((state) => state.settingsByKey.timezone as string | null) ?? 'UTC';
@@ -451,20 +441,12 @@ const LayerItem: React.FC<{
   const getAsset = useCallback((id: string) => {
     // Check pre-resolved assets from server first
     if (resolvedAssets?.[id]) {
-      // SVG marker: asset has content but no public URL
-      // For link resolution, this triggers '#no-svg-url' return
-      // For image rendering, we need to get the actual content from store
-      if (resolvedAssets[id] === '#svg-content') {
-        // Check if actual SVG content is in the store (already loaded)
-        const storeAsset = getAssetFromStore(id);
-        if (storeAsset?.content) {
-          return storeAsset; // Return full asset with actual SVG content
-        }
-        // Not in store - return marker for link resolution (will show #no-svg-url)
-        // Image rendering will show placeholder until asset loads
-        return { public_url: null, content: '#svg-marker', _isSvgMarker: true };
+      const value = resolvedAssets[id];
+      // Inline SVG content (starts with <) — return as content, no public URL
+      if (value.startsWith('<')) {
+        return { public_url: null, content: value };
       }
-      return { public_url: resolvedAssets[id] };
+      return { public_url: value };
     }
     // Fall back to store (may trigger async fetch)
     return getAssetFromStore(id);
@@ -472,6 +454,80 @@ const LayerItem: React.FC<{
   const openFileManager = useEditorStore((state) => state.openFileManager);
   const allTranslations = useLocalisationStore((state) => state.translations);
   const editModeTranslations = isEditMode && currentLocale ? allTranslations[currentLocale.id] : null;
+  const storeComponents = useComponentsStore((state) => state.components);
+  const allComponents = storeComponents.length > 0 ? storeComponents : (componentsProp ?? []);
+
+  // Shared props passed to nested LayerRenderer calls (component instances & rich-text components)
+  const sharedRendererProps = useMemo(() => ({
+    isEditMode,
+    isPublished,
+    selectedLayerId,
+    hoveredLayerId,
+    onLayerClick,
+    onLayerUpdate,
+    onLayerHover,
+    pageId,
+    collectionItemData: collectionLayerData,
+    collectionItemId: collectionLayerItemId,
+    layerDataMap: effectiveLayerDataMap,
+    pageCollectionItemId,
+    pageCollectionItemData,
+    hiddenLayerInfo,
+    editorHiddenLayerIds,
+    editorBreakpoint,
+    currentLocale,
+    availableLocales,
+    localeSelectorFormat,
+    liveLayerUpdates,
+    liveComponentUpdates,
+    isInsideForm,
+    parentFormSettings,
+    pages,
+    folders,
+    collectionItemSlugs,
+    isPreview,
+    translations,
+    anchorMap,
+    resolvedAssets,
+    components: componentsProp,
+  }), [isEditMode, isPublished, selectedLayerId, hoveredLayerId, onLayerClick, onLayerUpdate, onLayerHover, pageId, collectionLayerData, collectionLayerItemId, effectiveLayerDataMap, pageCollectionItemId, pageCollectionItemData, hiddenLayerInfo, editorHiddenLayerIds, editorBreakpoint, currentLocale, availableLocales, localeSelectorFormat, liveLayerUpdates, liveComponentUpdates, isInsideForm, parentFormSettings, pages, folders, collectionItemSlugs, isPreview, translations, anchorMap, resolvedAssets, componentsProp]);
+
+  // Callback for rendering embedded components inside rich-text content
+  // Clicks on the embedded component's internal layers should select the text layer
+  const renderComponentBlock: RenderComponentBlockFn = useCallback(
+    (comp, resolvedLayers, _overrides, key, innerAncestorIds) => {
+      const uniqueLayers = transformLayerIdsForInstance(
+        resolvedLayers,
+        `${layer.id}-rtc-${key}`
+      );
+      return (
+      <React.Fragment key={key}>
+        {isEditMode ? (
+          <div className="pointer-events-none">
+            <LayerRenderer
+              layers={uniqueLayers}
+              {...sharedRendererProps}
+              parentComponentLayerId={layer.id}
+              ancestorComponentIds={innerAncestorIds}
+            />
+          </div>
+        ) : (
+          <>
+            <LayerRenderer
+              layers={uniqueLayers}
+              {...sharedRendererProps}
+              parentComponentLayerId={layer.id}
+              ancestorComponentIds={innerAncestorIds}
+            />
+            <AnimationInitializer layers={uniqueLayers} />
+          </>
+        )}
+      </React.Fragment>
+      );
+    },
+    [layer.id, sharedRendererProps, isEditMode]
+  );
+
   let htmlTag = getLayerHtmlTag(layer);
 
   // Check if we need to override the tag for rich text with block elements
@@ -479,22 +535,44 @@ const LayerItem: React.FC<{
   const textVariable = layer.variables?.text;
   let useSpanForParagraphs = false;
 
-  if (textVariable?.type === 'dynamic_rich_text') {
+  {
     const restrictiveBlockTags = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'a', 'button'];
     const isRestrictiveTag = restrictiveBlockTags.includes(htmlTag);
-    // Check for lists in direct content AND in inline variables (CMS rich_text fields)
-    const hasLists = hasBlockElementsWithInlineVariables(
-      textVariable as any,
-      collectionLayerData,
-      pageCollectionItemData || undefined
-    );
 
-    if (isRestrictiveTag && hasLists) {
-      // Replace tag with div to allow list elements
-      htmlTag = 'div';
-    } else if (isRestrictiveTag) {
-      // Use span for paragraphs instead of p tags
-      useSpanForParagraphs = true;
+    if (isRestrictiveTag) {
+      let hasLists = false;
+
+      if (textVariable?.type === 'dynamic_rich_text') {
+        hasLists = hasBlockElementsWithInlineVariables(
+          textVariable as any,
+          collectionLayerData,
+          pageCollectionItemData || undefined
+        );
+      }
+
+      // Also check resolved component variable value for block elements
+      if (!hasLists) {
+        const componentVariables = parentComponentVariables || editingComponentVariables;
+        const linkedVariableId = (textVariable as any)?.id;
+        if (linkedVariableId && componentVariables) {
+          const overrideValue = parentComponentOverrides?.text?.[linkedVariableId];
+          const variableDef = componentVariables.find(v => v.id === linkedVariableId);
+          const valueToCheck = overrideValue ?? variableDef?.default_value;
+          if (valueToCheck && 'type' in valueToCheck && valueToCheck.type === 'dynamic_rich_text') {
+            hasLists = hasBlockElementsWithInlineVariables(
+              valueToCheck as any,
+              collectionLayerData,
+              pageCollectionItemData || undefined
+            );
+          }
+        }
+      }
+
+      if (hasLists) {
+        htmlTag = 'div';
+      } else if (textVariable?.type === 'dynamic_rich_text' || (textVariable as any)?.id) {
+        useSpanForParagraphs = true;
+      }
     }
   }
 
@@ -506,6 +584,7 @@ const LayerItem: React.FC<{
 
   // Code Embed iframe ref and effect - must be at component level
   const htmlEmbedIframeRef = React.useRef<HTMLIFrameElement>(null);
+  const filterLayerRef = React.useRef<HTMLDivElement>(null);
   const htmlEmbedCode = layer.name === 'htmlEmbed'
     ? (layer.settings?.htmlEmbed?.code || '<div>Add your custom code here</div>')
     : '';
@@ -568,6 +647,147 @@ const LayerItem: React.FC<{
     };
   }, [htmlEmbedCode, layer.name]);
 
+  // Filter layer runtime behavior: attach event listeners to child inputs
+  const isFilterLayer = layer.name === 'filter';
+  const filterOnChange = layer.settings?.filterOnChange ?? false;
+
+  // Load filter values from URL on initial render and populate input elements
+  React.useEffect(() => {
+    if (isEditMode || !isFilterLayer || !filterLayerRef.current) return;
+
+    const container = filterLayerRef.current;
+    const store = useFilterStore.getState();
+
+    // Build the name map from DOM: inputLayerId → name attribute (or stripped ID)
+    const nameMap: Record<string, string> = {};
+    const reverseMap: Record<string, string> = {};
+    const inputs = container.querySelectorAll('input, select, textarea');
+    inputs.forEach(el => {
+      const inputLayerId = (el as HTMLElement).closest('[data-layer-id]')?.getAttribute('data-layer-id');
+      if (!inputLayerId) return;
+      const nameAttr = (el as HTMLInputElement).getAttribute('name');
+      const paramName = nameAttr || (inputLayerId.startsWith('lyr-') ? inputLayerId.slice(4) : inputLayerId);
+      nameMap[inputLayerId] = paramName;
+      reverseMap[paramName] = inputLayerId;
+    });
+    const inputLayerIds = Object.keys(nameMap);
+    store.setNameMap(nameMap);
+
+    // Populate input elements with values from URL params
+    const url = new URL(window.location.href);
+    url.searchParams.forEach((value, key) => {
+      if (!value) return;
+      const inputLayerId = reverseMap[key]
+        || (key.startsWith('filter_') ? key.slice('filter_'.length) : null);
+      if (!inputLayerId) return;
+      // Find the input: it may be a descendant of a wrapper div OR the element itself
+      let inputEl = container.querySelector(`[data-layer-id="${inputLayerId}"] input, [data-layer-id="${inputLayerId}"] select, [data-layer-id="${inputLayerId}"] textarea`) as HTMLInputElement | null;
+      if (!inputEl) {
+        const directEl = container.querySelector(`input[data-layer-id="${inputLayerId}"], select[data-layer-id="${inputLayerId}"], textarea[data-layer-id="${inputLayerId}"]`) as HTMLInputElement | null;
+        inputEl = directEl;
+      }
+      if (!inputEl) return;
+      if (inputEl.type === 'checkbox') {
+        inputEl.checked = value === 'true';
+      } else {
+        inputEl.value = value;
+      }
+    });
+
+    // Defer loadFromUrl to ensure FilterableCollection has mounted and subscribed
+    setTimeout(() => store.loadFromUrl(), 0);
+
+    return () => {
+      const state = useFilterStore.getState();
+      state.removeNameMapEntries(inputLayerIds);
+    };
+  }, [isEditMode, isFilterLayer]);
+
+  React.useEffect(() => {
+    if (isEditMode || !isFilterLayer || !filterLayerRef.current) return;
+
+    const container = filterLayerRef.current;
+    const filterLayerId = layer.id;
+    const { setFilterValues } = useFilterStore.getState();
+
+    const collectInputValues = () => {
+      const nameMap: Record<string, string> = {};
+      const inputValues: Record<string, string> = {};
+      const inputs = container.querySelectorAll('input, select, textarea');
+      inputs.forEach(el => {
+        const inputEl = el as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+        const inputLayerId = inputEl.closest('[data-layer-id]')?.getAttribute('data-layer-id');
+        if (!inputLayerId) return;
+        const nameAttr = inputEl.getAttribute('name');
+        if (nameAttr) nameMap[inputLayerId] = nameAttr;
+        const value = inputEl.type === 'checkbox' ? (inputEl as HTMLInputElement).checked.toString() : inputEl.value;
+        inputValues[inputLayerId] = value;
+      });
+      setFilterValues(filterLayerId, inputValues);
+      if (Object.keys(nameMap).length > 0) {
+        useFilterStore.getState().setNameMap(nameMap);
+      }
+    };
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedCollect = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(collectInputValues, 750);
+    };
+
+    // Button click handler - always triggers collection
+    const handleButtonClick = (e: Event) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('button') || target.tagName === 'BUTTON') {
+        e.preventDefault();
+        collectInputValues();
+      }
+    };
+
+    // Enter key handler - triggers collection from any input
+    const handleKeyDown = (e: Event) => {
+      const ke = e as KeyboardEvent;
+      if (ke.key !== 'Enter') return;
+      const target = ke.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'SELECT') {
+        ke.preventDefault();
+        collectInputValues();
+      }
+    };
+
+    container.addEventListener('click', handleButtonClick);
+    container.addEventListener('keydown', handleKeyDown);
+
+    // If filterOnChange is enabled, listen for input changes
+    if (filterOnChange) {
+      const handleInputChange = () => debouncedCollect();
+      container.addEventListener('input', handleInputChange);
+      container.addEventListener('change', handleInputChange);
+
+      // Apply initial input values (including defaults) on mount.
+      collectInputValues();
+
+      return () => {
+        container.removeEventListener('click', handleButtonClick);
+        container.removeEventListener('keydown', handleKeyDown);
+        container.removeEventListener('input', handleInputChange);
+        container.removeEventListener('change', handleInputChange);
+        useFilterStore.getState().clearFilter(filterLayerId);
+        if (debounceTimer) clearTimeout(debounceTimer);
+      };
+    }
+
+    // Apply initial input values (including defaults) on mount.
+    collectInputValues();
+
+    return () => {
+      container.removeEventListener('click', handleButtonClick);
+      container.removeEventListener('keydown', handleKeyDown);
+      useFilterStore.getState().clearFilter(filterLayerId);
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+  }, [isFilterLayer, filterOnChange, isEditMode, layer.id]);
+
   // Resolve text and image URLs with field binding support
   const textContent = (() => {
     // Special handling for locale selector label
@@ -620,7 +840,7 @@ const LayerItem: React.FC<{
       if (valueToRender !== undefined) {
         // Value is typed as ComponentVariableValue - check if it's a text variable (has 'type' property)
         if ('type' in valueToRender && valueToRender.type === 'dynamic_rich_text') {
-          return renderRichText(valueToRender as any, collectionLayerData, pageCollectionItemData || undefined, layer.textStyles, useSpanForParagraphs, isEditMode, linkContext, timezone, effectiveLayerDataMap);
+          return renderRichText(valueToRender as any, collectionLayerData, pageCollectionItemData || undefined, layer.textStyles, useSpanForParagraphs, isEditMode, linkContext, timezone, effectiveLayerDataMap, allComponents, renderComponentBlock, effectiveAncestorIds);
         }
         if ('type' in valueToRender && valueToRender.type === 'dynamic_text') {
           return (valueToRender as any).data.content;
@@ -635,7 +855,7 @@ const LayerItem: React.FC<{
     if (textVariable?.type === 'dynamic_rich_text') {
       // Render rich text with formatting (bold, italic, etc.) and inline variables
       // In edit mode, adds data-style attributes for style selection
-      return renderRichText(textVariable as any, collectionLayerData, pageCollectionItemData || undefined, layer.textStyles, useSpanForParagraphs, isEditMode, linkContext, timezone, effectiveLayerDataMap);
+      return renderRichText(textVariable as any, collectionLayerData, pageCollectionItemData || undefined, layer.textStyles, useSpanForParagraphs, isEditMode, linkContext, timezone, effectiveLayerDataMap, allComponents, renderComponentBlock, effectiveAncestorIds);
     }
 
     // Check for inline variables in DynamicTextVariable format (legacy)
@@ -804,7 +1024,7 @@ const LayerItem: React.FC<{
   // This enables animations to target the correct elements when multiple instances exist
   const transformedComponentLayers = useMemo(() => {
     if (isEditMode && component && component.layers && component.layers.length > 0) {
-      return transformComponentLayersForInstance(component.layers, layer.id);
+      return transformLayerIdsForInstance(component.layers, layer.id);
     }
     return null;
   }, [isEditMode, component, layer.id]);
@@ -887,15 +1107,30 @@ const LayerItem: React.FC<{
     }
 
     // Apply collection filters (evaluate against each item's own values)
+    // In edit mode, skip conditions that have inputLayerId (dynamic filter inputs have no value at design time)
     const collectionFilters = collectionVariable?.filters;
     if (collectionFilters?.groups?.length) {
-      items = items.filter(item =>
-        evaluateVisibility(collectionFilters, {
-          collectionLayerData: item.values,
-          pageCollectionData: null,
-          pageCollectionCounts: {},
-        })
-      );
+      const effectiveFilters = isEditMode
+        ? {
+          ...collectionFilters,
+          groups: collectionFilters.groups
+            .map(group => ({
+              ...group,
+              conditions: group.conditions.filter(c => !c.inputLayerId),
+            }))
+            .filter(group => group.conditions.length > 0),
+        }
+        : collectionFilters;
+
+      if (effectiveFilters.groups.length > 0) {
+        items = items.filter(item =>
+          evaluateVisibility(effectiveFilters, {
+            collectionLayerData: item.values,
+            pageCollectionData: null,
+            pageCollectionCounts: {},
+          })
+        );
+      }
     }
 
     return items;
@@ -1091,50 +1326,41 @@ const LayerItem: React.FC<{
     }
   }
 
+  // Prevent circular component rendering (A → B → A)
+  if (layer.componentId && ancestorComponentIds?.has(layer.componentId)) {
+    return null;
+  }
+
   // Render element-specific content
   const renderContent = () => {
-    // Component instances in EDIT MODE: render component's layers directly without wrapper
-    // In published mode, components are already resolved server-side into children, so render normally
+    // Component instances in EDIT MODE: render component's layers directly
+    // Set the root layer's ID to the instance ID so SelectionOverlay can find
+    // the element via [data-layer-id]. This matches published mode where
+    // resolveComponents merges the component root into the instance layer.
     if (transformedComponentLayers && transformedComponentLayers.length > 0) {
+      const layersWithInstanceId = [
+        { ...transformedComponentLayers[0], id: layer.id },
+        ...transformedComponentLayers.slice(1),
+      ];
+
+      // Resolve variableLinks: if this nested component instance links child variables
+      // to parent variables, merge the parent's override/default values into the
+      // instance overrides so children see the correct values.
+      const effectiveOverrides = layer.componentOverrides?.variableLinks
+        ? resolveVariableLinks(layer.componentOverrides, parentComponentOverrides, parentComponentVariables)
+        : layer.componentOverrides;
+
       return (
         <LayerRenderer
-          layers={transformedComponentLayers}
-          onLayerClick={onLayerClick}
-          onLayerUpdate={onLayerUpdate}
-          onLayerHover={onLayerHover}
-          selectedLayerId={selectedLayerId}
-          hoveredLayerId={hoveredLayerId}
-          isEditMode={isEditMode}
-          isPublished={isPublished}
+          layers={layersWithInstanceId}
+          {...sharedRendererProps}
           enableDragDrop={enableDragDrop}
           activeLayerId={activeLayerId}
           projected={projected}
-          pageId={pageId}
-          collectionItemData={collectionLayerData}
-          collectionItemId={collectionLayerItemId}
-          layerDataMap={effectiveLayerDataMap}
-          pageCollectionItemId={pageCollectionItemId}
-          pageCollectionItemData={pageCollectionItemData}
-          hiddenLayerInfo={hiddenLayerInfo}
-          editorHiddenLayerIds={editorHiddenLayerIds}
-          editorBreakpoint={editorBreakpoint}
-          currentLocale={currentLocale}
-          availableLocales={availableLocales}
-          localeSelectorFormat={localeSelectorFormat}
-          liveLayerUpdates={liveLayerUpdates}
-          liveComponentUpdates={liveComponentUpdates}
           parentComponentLayerId={layer.id}
-          parentComponentOverrides={layer.componentOverrides}
+          parentComponentOverrides={effectiveOverrides}
           parentComponentVariables={component?.variables}
-          isInsideForm={isInsideForm}
-          parentFormSettings={parentFormSettings}
-          pages={pages}
-          folders={folders}
-          collectionItemSlugs={collectionItemSlugs}
-          isPreview={isPreview}
-          translations={translations}
-          anchorMap={anchorMap}
-          resolvedAssets={resolvedAssets}
+          ancestorComponentIds={effectiveAncestorIds}
         />
       );
     }
@@ -1234,8 +1460,15 @@ const LayerItem: React.FC<{
     const isLocked = layer.id === 'body';
 
     // Build props for the element
+    const combinedRef = isFilterLayer
+      ? (node: HTMLElement | null) => {
+        setNodeRef(node);
+        (filterLayerRef as React.MutableRefObject<HTMLDivElement | null>).current = node as HTMLDivElement | null;
+      }
+      : setNodeRef;
+
     const elementProps: Record<string, unknown> = {
-      ref: setNodeRef,
+      ref: combinedRef,
       className: fullClassName,
       style: mergedStyle,
       'data-layer-id': layer.id,
@@ -1310,6 +1543,16 @@ const LayerItem: React.FC<{
     if (isEditMode && !isEditing) {
       const originalOnClick = elementProps.onClick as ((e: React.MouseEvent) => void) | undefined;
       elementProps.onClick = (e: React.MouseEvent) => {
+        // Ignore keyboard-generated clicks (detail===0) when a text editor
+        // is active inside this element (e.g. Space on a <button> triggers
+        // native click activation which would steal focus from the editor)
+        if (e.detail === 0) {
+          const el = e.currentTarget as HTMLElement;
+          if (el?.querySelector?.('[contenteditable="true"]')) {
+            e.stopPropagation();
+            return;
+          }
+        }
         // Block click if locked by another user
         if (isLockedByOther) {
           e.stopPropagation();
@@ -1344,6 +1587,16 @@ const LayerItem: React.FC<{
         if (layer.name === 'image' || htmlTag === 'img') {
           openImageFileManager();
           return;
+        }
+
+        // Rich text with components or inline variables: open sheet editor instead of canvas editing
+        if (textEditable) {
+          const textVar = layer.variables?.text;
+          const richContent = textVar?.type === 'dynamic_rich_text' ? textVar.data.content : null;
+          if (richContent && hasComponentOrVariable(richContent)) {
+            useEditorStore.getState().openRichTextSheet(layer.id);
+            return;
+          }
         }
 
         // Text-editable layers: start inline editing
@@ -1463,6 +1716,21 @@ const LayerItem: React.FC<{
     if (htmlTag === 'select') {
       if (isInsideForm && !elementProps.name) {
         elementProps.name = layer.settings?.id || layer.id;
+      }
+
+      // Keep select uncontrolled while still supporting default selection
+      // from layer attributes (e.g. collection-sourced default option).
+      if ('value' in elementProps) {
+        elementProps.defaultValue = elementProps.value;
+        delete elementProps.value;
+      }
+
+      if (isEditMode && layer.settings?.optionsSource?.collectionId) {
+        return (
+          <Tag {...elementProps}>
+            <option disabled value="">(Options from collection)</option>
+          </Tag>
+        );
       }
     }
 
@@ -1609,18 +1877,14 @@ const LayerItem: React.FC<{
             );
             const assetId = translatedAssetId || originalAssetId;
 
-            // Check assetsById first (reactive) then getAsset (may trigger fetch)
             const asset = assetsById[assetId] || getAsset(assetId);
-            // Skip SVG marker (not actual content)
-            iconHtml = (asset?.content && !(asset as any)._isSvgMarker) ? asset.content : '';
+            iconHtml = asset?.content || '';
           }
         } else if (isFieldVariable(iconSrc)) {
           const resolvedValue = resolveFieldValue(iconSrc, collectionLayerData, pageCollectionItemData, effectiveLayerDataMap);
           if (resolvedValue && typeof resolvedValue === 'string') {
-            // Try to get as asset first (field contains asset ID)
             const asset = assetsById[resolvedValue] || getAsset(resolvedValue);
-            // Use asset content if available (not marker), otherwise treat as raw SVG code
-            iconHtml = (asset?.content && !(asset as any)._isSvgMarker) ? asset.content : resolvedValue;
+            iconHtml = asset?.content || resolvedValue;
           }
         }
       }
@@ -1902,6 +2166,8 @@ const LayerItem: React.FC<{
               liveLayerUpdates={liveLayerUpdates}
               isInsideForm={isInsideForm}
               parentFormSettings={parentFormSettings}
+              components={componentsProp}
+              ancestorComponentIds={effectiveAncestorIds}
             />
           )}
         </Tag>
@@ -2080,6 +2346,8 @@ const LayerItem: React.FC<{
                     translations={translations}
                     anchorMap={anchorMap}
                     resolvedAssets={resolvedAssets}
+                    components={componentsProp}
+                    ancestorComponentIds={effectiveAncestorIds}
                   />
                 )}
               </Tag>
@@ -2143,6 +2411,8 @@ const LayerItem: React.FC<{
               editingComponentVariables={editingComponentVariables}
               isInsideForm={isInsideForm || htmlTag === 'form'}
               parentFormSettings={htmlTag === 'form' ? layer.settings?.form : parentFormSettings}
+              components={componentsProp}
+              ancestorComponentIds={effectiveAncestorIds}
             />
           )}
 
@@ -2210,6 +2480,8 @@ const LayerItem: React.FC<{
             translations={translations}
             anchorMap={anchorMap}
             resolvedAssets={resolvedAssets}
+            components={componentsProp}
+            ancestorComponentIds={effectiveAncestorIds}
           />
         )}
       </Tag>

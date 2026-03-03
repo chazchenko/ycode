@@ -2,14 +2,15 @@ import AnimationInitializer from '@/components/AnimationInitializer';
 import ContentHeightReporter from '@/components/ContentHeightReporter';
 import LayerRenderer from '@/components/LayerRenderer';
 import PasswordForm from '@/components/PasswordForm';
-import { resolveComponents } from '@/lib/resolve-components';
 import { resolveCustomCodePlaceholders } from '@/lib/resolve-cms-variables';
 import { generateInitialAnimationCSS, type HiddenLayerInfo } from '@/lib/animation-utils';
 import { buildCustomFontsCss, buildFontClassesCss, getGoogleFontLinks } from '@/lib/font-utils';
+import { collectLayerAssetIds, getAssetProxyUrl } from '@/lib/asset-utils';
 import { getAllPages } from '@/lib/repositories/pageRepository';
 import { getAllPageFolders } from '@/lib/repositories/pageFolderRepository';
 import { getItemWithValues } from '@/lib/repositories/collectionItemRepository';
 import { getFieldsByCollectionId } from '@/lib/repositories/collectionFieldRepository';
+import { getClassesString } from '@/lib/layer-utils';
 import type { Layer, Component, Page, CollectionItemWithValues, CollectionField, Locale, PageFolder } from '@/types';
 
 /** Password protection context for 401 error pages */
@@ -45,28 +46,18 @@ interface PageRendererProps {
  * Note: This is a Server Component. Script/style tags are automatically
  * hoisted to <head> by Next.js during SSR, eliminating FOUC.
  */
-function normalizeRootLayers(layerTree: Layer[]): Layer[] {
-  if (!layerTree || layerTree.length === 0) {
-    return layerTree;
+/** Extract body layer from the tree and return its classes + children to render */
+function extractBodyLayer(layers: Layer[]): { bodyClasses: string; childLayers: Layer[] } {
+  const bodyLayer = layers.find(l => l.id === 'body');
+  if (!bodyLayer) {
+    return { bodyClasses: '', childLayers: layers };
   }
 
-  const [firstLayer, ...rest] = layerTree;
-
-  if (firstLayer?.id !== 'body') {
-    return layerTree;
-  }
-
-  return [
-    {
-      ...firstLayer,
-      name: 'div',
-      settings: {
-        ...firstLayer.settings,
-        tag: 'div',
-      },
-    },
-    ...rest,
-  ];
+  const otherLayers = layers.filter(l => l.id !== 'body');
+  return {
+    bodyClasses: getClassesString(bodyLayer),
+    childLayers: [...(bodyLayer.children || []), ...otherLayers],
+  };
 }
 
 export default async function PageRenderer({
@@ -88,11 +79,9 @@ export default async function PageRenderer({
 }: PageRendererProps) {
   // Check if this is a 401 error page that needs password form
   const is401Page = page.error_page === 401;
-  // Resolve component instances in the layer tree before rendering
-  // If components array is empty, they're already resolved server-side
-  const resolvedLayers = components.length > 0
-    ? resolveComponents(layers || [], components)
-    : layers || [];
+  // Layers are always pre-resolved by the caller (page-fetcher).
+  // Components are passed through for rich-text embedded component rendering in LayerRenderer.
+  const resolvedLayers = layers || [];
 
   // Scan layers for collection_item_ids referenced in link settings
   // Excludes special keywords like 'current-page' and 'current-collection' which are resolved at runtime
@@ -196,8 +185,8 @@ export default async function PageRenderer({
     ? resolveCustomCodePlaceholders(rawPageCustomCodeBody, collectionItem, collectionFields)
     : rawPageCustomCodeBody;
 
-  const normalizedLayers = normalizeRootLayers(resolvedLayers);
-  const hasLayers = normalizedLayers.length > 0;
+  const { bodyClasses, childLayers } = extractBodyLayer(resolvedLayers);
+  const hasLayers = childLayers.length > 0;
 
   // Generate CSS for initial animation states to prevent flickering
   const { css: initialAnimationCSS, hiddenLayerInfo } = generateInitialAnimationCSS(resolvedLayers);
@@ -216,99 +205,7 @@ export default async function PageRenderer({
   }
 
   // Pre-resolve all asset URLs for SSR (images, videos, audio, icons, and field values)
-  // This prevents client-side fetching delays and ensures links/media work immediately
-  const collectAssetIds = (layers: Layer[]): Set<string> => {
-    const assetIds = new Set<string>();
-
-    const isAssetVar = (v: any): v is { type: 'asset'; data: { asset_id: string } } =>
-      v && v.type === 'asset' && v.data?.asset_id;
-
-    const isUuid = (v: string) =>
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
-
-    // Scan rich text content for asset links in richTextLink marks
-    const scanRichTextForAssets = (content: any) => {
-      if (!content || typeof content !== 'object') return;
-
-      // Check marks for richTextLink with asset
-      if (Array.isArray(content.marks)) {
-        for (const mark of content.marks) {
-          if (mark.type === 'richTextLink' && mark.attrs?.asset?.id) {
-            assetIds.add(mark.attrs.asset.id);
-          }
-        }
-      }
-
-      // Recurse into content arrays
-      if (Array.isArray(content.content)) {
-        for (const child of content.content) {
-          scanRichTextForAssets(child);
-        }
-      }
-      if (Array.isArray(content)) {
-        for (const child of content) {
-          scanRichTextForAssets(child);
-        }
-      }
-    };
-
-    const scan = (layer: Layer) => {
-      // Image source
-      if (isAssetVar(layer.variables?.image?.src)) {
-        assetIds.add(layer.variables.image.src.data.asset_id);
-      }
-      // Video source and poster
-      if (isAssetVar(layer.variables?.video?.src)) {
-        assetIds.add(layer.variables.video.src.data.asset_id);
-      }
-      if (isAssetVar(layer.variables?.video?.poster)) {
-        assetIds.add(layer.variables.video.poster.data.asset_id);
-      }
-      // Audio source
-      if (isAssetVar(layer.variables?.audio?.src)) {
-        assetIds.add(layer.variables.audio.src.data.asset_id);
-      }
-      // Icon source
-      if (isAssetVar(layer.variables?.icon?.src)) {
-        assetIds.add(layer.variables.icon.src.data.asset_id);
-      }
-      // Background image source
-      if (isAssetVar(layer.variables?.backgroundImage?.src)) {
-        assetIds.add(layer.variables.backgroundImage.src.data.asset_id);
-      }
-
-      // Direct asset link (type = 'asset')
-      const linkAssetId = layer.variables?.link?.asset?.id;
-      if (linkAssetId) {
-        assetIds.add(linkAssetId);
-      }
-
-      // Rich text links with asset type
-      const textVar = layer.variables?.text;
-      if (textVar && textVar.type === 'dynamic_rich_text' && (textVar as any).data?.content) {
-        scanRichTextForAssets((textVar as any).data.content);
-      }
-
-      // Collection item values on resolved collection layers
-      if (layer._collectionItemValues) {
-        for (const value of Object.values(layer._collectionItemValues)) {
-          if (typeof value === 'string' && isUuid(value)) {
-            assetIds.add(value);
-          }
-        }
-      }
-
-      if (layer.children) {
-        layer.children.forEach(scan);
-      }
-    };
-
-    layers.forEach(scan);
-    return assetIds;
-  };
-
-  // Collect asset IDs from layers
-  const layerAssetIds = collectAssetIds(resolvedLayers);
+  const layerAssetIds = collectLayerAssetIds(resolvedLayers, components);
 
   // Also collect from page collection item values (for dynamic pages)
   if (collectionItem) {
@@ -328,11 +225,13 @@ export default async function PageRenderer({
       const assetMap = await getAssetsByIds(Array.from(layerAssetIds), !isPreview);
       resolvedAssets = {};
       for (const [id, asset] of Object.entries(assetMap)) {
-        if (asset.public_url) {
+        const proxyUrl = getAssetProxyUrl(asset);
+        if (proxyUrl) {
+          resolvedAssets[id] = proxyUrl;
+        } else if (asset.public_url) {
           resolvedAssets[id] = asset.public_url;
         } else if (asset.content) {
-          // SVG assets have content but no public_url - mark so client doesn't fetch
-          resolvedAssets[id] = '#svg-content';
+          resolvedAssets[id] = asset.content;
         }
       }
     } catch (error) {
@@ -406,15 +305,25 @@ export default async function PageRenderer({
         <div dangerouslySetInnerHTML={{ __html: pageCustomCodeHead }} />
       )}
 
+      {/* Apply body layer classes to <body> synchronously before paint */}
+      <script
+        dangerouslySetInnerHTML={{
+          __html: (() => {
+            const classes = (bodyClasses || 'bg-white').split(/\s+/).filter(Boolean);
+            return `document.body.classList.add(${classes.map(c => JSON.stringify(c)).join(',')});`;
+          })(),
+        }}
+      />
+
       <div
         id="ybody"
-        className="h-full min-h-screen bg-white"
+        className="contents"
         data-layer-id="body"
         data-layer-type="div"
         data-is-empty={hasLayers ? 'false' : 'true'}
       >
         <LayerRenderer
-          layers={normalizedLayers}
+          layers={childLayers}
           isEditMode={false}
           isPublished={page.is_published}
           pageCollectionItemId={collectionItem?.id}
@@ -428,6 +337,7 @@ export default async function PageRenderer({
           isPreview={isPreview}
           translations={translations}
           resolvedAssets={resolvedAssets}
+          components={components}
         />
 
         {/* Inject password form for 401 error pages */}

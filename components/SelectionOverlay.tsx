@@ -28,6 +28,10 @@ interface SelectionOverlayProps {
   zoom: number;
 }
 
+const SELECTED_OUTLINE_CLASS = 'outline outline-1 outline-blue-500';
+const HOVERED_OUTLINE_CLASS = 'outline outline-1 outline-blue-400/50';
+const PARENT_OUTLINE_CLASS = 'outline outline-1 outline-dashed outline-blue-400';
+
 export function SelectionOverlay({
   iframeElement,
   containerElement,
@@ -36,70 +40,86 @@ export function SelectionOverlay({
   parentLayerId,
   zoom,
 }: SelectionOverlayProps) {
-  // Refs for direct DOM manipulation (no React re-render needed)
-  const selectedRef = useRef<HTMLDivElement>(null);
-  const hoveredRef = useRef<HTMLDivElement>(null);
-  const parentRef = useRef<HTMLDivElement>(null);
+  // Container refs for outline groups (supports multiple instances per layer ID)
+  const selectedContainerRef = useRef<HTMLDivElement>(null);
+  const hoveredContainerRef = useRef<HTMLDivElement>(null);
+  const parentContainerRef = useRef<HTMLDivElement>(null);
   
   // Track drag state for scroll/mutation handlers
   const isDraggingRef = useRef(false);
 
-  // Update a single outline element's position directly via DOM
+  const hideAllOutlines = useCallback(() => {
+    if (selectedContainerRef.current) selectedContainerRef.current.style.display = 'none';
+    if (hoveredContainerRef.current) hoveredContainerRef.current.style.display = 'none';
+    if (parentContainerRef.current) parentContainerRef.current.style.display = 'none';
+  }, []);
+
+  // Update outline(s) for all elements matching a layer ID
   const updateOutline = useCallback((
-    element: HTMLDivElement | null,
+    container: HTMLDivElement | null,
     layerId: string | null,
     iframeDoc: Document,
     iframeElement: HTMLIFrameElement,
     containerElement: HTMLElement,
-    scale: number
+    scale: number,
+    outlineClass: string,
   ) => {
-    if (!element) return;
+    if (!container) return;
 
-    if (!layerId) {
-      element.style.display = 'none';
+    if (!layerId || layerId === 'body') {
+      container.style.display = 'none';
       return;
     }
 
-    // Find the element inside the iframe
-    const targetElement = iframeDoc.querySelector(`[data-layer-id="${layerId}"]`) as HTMLElement;
-    if (!targetElement) {
-      element.style.display = 'none';
+    const targetElements = iframeDoc.querySelectorAll(`[data-layer-id="${layerId}"]`);
+    if (targetElements.length === 0) {
+      container.style.display = 'none';
       return;
     }
 
-    // Get bounding rects
-    const elementRect = targetElement.getBoundingClientRect();
+    container.style.display = 'block';
+
     const iframeRect = iframeElement.getBoundingClientRect();
     const containerRect = containerElement.getBoundingClientRect();
 
-    // Calculate position relative to container, accounting for zoom
-    const top = iframeRect.top - containerRect.top + (elementRect.top * scale);
-    const left = iframeRect.left - containerRect.left + (elementRect.left * scale);
-    const width = elementRect.width * scale;
-    const height = elementRect.height * scale;
+    // Ensure we have the right number of child outline divs
+    while (container.children.length < targetElements.length) {
+      const div = document.createElement('div');
+      div.className = `absolute ${outlineClass}`;
+      container.appendChild(div);
+    }
+    // Hide excess children
+    for (let i = targetElements.length; i < container.children.length; i++) {
+      (container.children[i] as HTMLElement).style.display = 'none';
+    }
 
-    // Apply styles directly
-    element.style.display = 'block';
-    element.style.top = `${top}px`;
-    element.style.left = `${left}px`;
-    element.style.width = `${width}px`;
-    element.style.height = `${height}px`;
+    targetElements.forEach((targetElement, idx) => {
+      const elementRect = targetElement.getBoundingClientRect();
+      const child = container.children[idx] as HTMLElement;
+
+      const top = iframeRect.top - containerRect.top + (elementRect.top * scale);
+      const left = iframeRect.left - containerRect.left + (elementRect.left * scale);
+      const width = elementRect.width * scale;
+      const height = elementRect.height * scale;
+
+      child.style.display = 'block';
+      child.style.top = `${top}px`;
+      child.style.left = `${left}px`;
+      child.style.width = `${width}px`;
+      child.style.height = `${height}px`;
+    });
   }, []);
 
   // Update all outlines
   const updateAllOutlines = useCallback((skipSolidBorders = false) => {
     if (!iframeElement || !containerElement) {
-      if (selectedRef.current) selectedRef.current.style.display = 'none';
-      if (hoveredRef.current) hoveredRef.current.style.display = 'none';
-      if (parentRef.current) parentRef.current.style.display = 'none';
+      hideAllOutlines();
       return;
     }
 
     const iframeDoc = iframeElement.contentDocument;
     if (!iframeDoc) {
-      if (selectedRef.current) selectedRef.current.style.display = 'none';
-      if (hoveredRef.current) hoveredRef.current.style.display = 'none';
-      if (parentRef.current) parentRef.current.style.display = 'none';
+      hideAllOutlines();
       return;
     }
 
@@ -107,17 +127,17 @@ export function SelectionOverlay({
 
     // Update selected outline (skip during drag)
     if (!skipSolidBorders) {
-      updateOutline(selectedRef.current, selectedLayerId, iframeDoc, iframeElement, containerElement, scale);
+      updateOutline(selectedContainerRef.current, selectedLayerId, iframeDoc, iframeElement, containerElement, scale, SELECTED_OUTLINE_CLASS);
 
       // Update hovered outline (only if different from selected)
       const effectiveHoveredId = hoveredLayerId !== selectedLayerId ? hoveredLayerId : null;
-      updateOutline(hoveredRef.current, effectiveHoveredId, iframeDoc, iframeElement, containerElement, scale);
+      updateOutline(hoveredContainerRef.current, effectiveHoveredId, iframeDoc, iframeElement, containerElement, scale, HOVERED_OUTLINE_CLASS);
     }
 
     // Update parent outline (only if different from selected) - always visible
     const effectiveParentId = parentLayerId !== selectedLayerId ? parentLayerId : null;
-    updateOutline(parentRef.current, effectiveParentId, iframeDoc, iframeElement, containerElement, scale);
-  }, [iframeElement, containerElement, selectedLayerId, hoveredLayerId, parentLayerId, zoom, updateOutline]);
+    updateOutline(parentContainerRef.current, effectiveParentId, iframeDoc, iframeElement, containerElement, scale, PARENT_OUTLINE_CLASS);
+  }, [iframeElement, containerElement, selectedLayerId, hoveredLayerId, parentLayerId, zoom, updateOutline, hideAllOutlines]);
 
   // Initial update and updates when IDs change
   useEffect(() => {
@@ -135,10 +155,7 @@ export function SelectionOverlay({
 
     // Hide outlines during scroll, show after scroll ends
     const handleScroll = () => {
-      // Hide outlines immediately on scroll
-      if (selectedRef.current) selectedRef.current.style.display = 'none';
-      if (hoveredRef.current) hoveredRef.current.style.display = 'none';
-      if (parentRef.current) parentRef.current.style.display = 'none';
+      hideAllOutlines();
 
       // Clear existing timeout
       if (scrollTimeout) {
@@ -160,10 +177,7 @@ export function SelectionOverlay({
       const hasStructuralChange = mutations.some(m => m.type === 'childList');
 
       if (hasStructuralChange) {
-        // Hide outlines immediately during structural DOM changes (new element added/removed)
-        if (selectedRef.current) selectedRef.current.style.display = 'none';
-        if (hoveredRef.current) hoveredRef.current.style.display = 'none';
-        if (parentRef.current) parentRef.current.style.display = 'none';
+        hideAllOutlines();
 
         if (mutationTimeout) clearTimeout(mutationTimeout);
 
@@ -198,10 +212,7 @@ export function SelectionOverlay({
     // Hide outlines during viewport switch, show after transition settles
     let viewportTimeout: ReturnType<typeof setTimeout> | null = null;
     const handleViewportChange = () => {
-      // Hide outlines immediately
-      if (selectedRef.current) selectedRef.current.style.display = 'none';
-      if (hoveredRef.current) hoveredRef.current.style.display = 'none';
-      if (parentRef.current) parentRef.current.style.display = 'none';
+      hideAllOutlines();
 
       if (viewportTimeout) clearTimeout(viewportTimeout);
 
@@ -229,7 +240,7 @@ export function SelectionOverlay({
       window.removeEventListener('resize', handleScroll);
       window.removeEventListener('viewportChange', handleViewportChange);
     };
-  }, [iframeElement, containerElement, updateAllOutlines]);
+  }, [iframeElement, containerElement, updateAllOutlines, hideAllOutlines]);
 
   // Check if layer dragging is active (to hide selection during drag)
   const isDraggingLayerOnCanvas = useEditorStore((state) => state.isDraggingLayerOnCanvas);
@@ -239,39 +250,24 @@ export function SelectionOverlay({
     isDraggingRef.current = isDraggingLayerOnCanvas;
     
     if (isDraggingLayerOnCanvas) {
-      // Hide solid borders during drag
-      if (selectedRef.current) selectedRef.current.style.display = 'none';
-      if (hoveredRef.current) hoveredRef.current.style.display = 'none';
-      // Keep parent dashed outline visible - update just the parent
-      updateAllOutlines(true); // skipSolidBorders = true
+      hideAllOutlines();
+      updateAllOutlines(true); // skipSolidBorders = true, re-shows parent outline
     } else {
       // Re-show all outlines when drag ends
       updateAllOutlines(false);
     }
-  }, [isDraggingLayerOnCanvas, updateAllOutlines]);
+  }, [isDraggingLayerOnCanvas, updateAllOutlines, hideAllOutlines]);
 
   return (
     <div className="absolute inset-0 pointer-events-none overflow-hidden z-40">
-      {/* Parent outline (dashed) - visible during drag */}
-      <div
-        ref={parentRef}
-        className="absolute outline outline-1 outline-dashed outline-blue-400"
-        style={{ display: 'none' }}
-      />
+      {/* Parent outline container (dashed) - visible during drag */}
+      <div ref={parentContainerRef} style={{ display: 'none' }} />
 
-      {/* Hover outline - hidden during drag */}
-      <div
-        ref={hoveredRef}
-        className="absolute outline outline-1 outline-blue-400/50"
-        style={{ display: 'none' }}
-      />
+      {/* Hover outline container - hidden during drag */}
+      <div ref={hoveredContainerRef} style={{ display: 'none' }} />
 
-      {/* Selection outline - hidden during drag */}
-      <div
-        ref={selectedRef}
-        className="absolute outline outline-1 outline-blue-500"
-        style={{ display: 'none' }}
-      />
+      {/* Selection outline container - hidden during drag */}
+      <div ref={selectedContainerRef} style={{ display: 'none' }} />
     </div>
   );
 }

@@ -239,8 +239,7 @@ export function getImageUrlFromVariable(
     if (asset?.public_url) {
       return asset.public_url;
     }
-    // Check for actual SVG content (not just the marker used for link resolution)
-    if (asset?.content && !(asset as any)._isSvgMarker) {
+    if (asset?.content) {
       // Convert inline SVG content to data URL
       return `data:image/svg+xml,${encodeURIComponent(asset.content)}`;
     }
@@ -266,8 +265,7 @@ export function getImageUrlFromVariable(
       if (asset?.public_url) {
         return asset.public_url;
       }
-      // Also support SVG content for field variables (not just the marker)
-      if (asset?.content && !(asset as any)._isSvgMarker) {
+      if (asset?.content) {
         return `data:image/svg+xml,${encodeURIComponent(asset.content)}`;
       }
     }

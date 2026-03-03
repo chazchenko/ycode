@@ -178,7 +178,7 @@ export default async function Home() {
     <PageRenderer
       page={data.page}
       layers={data.pageLayers.layers || []}
-      components={[]}
+      components={data.components}
       generatedCss={globalSettings.publishedCss || undefined}
       locale={data.locale}
       availableLocales={data.availableLocales}

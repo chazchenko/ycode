@@ -7,13 +7,14 @@
  * Uses custom pointer-based drag-and-drop for cross-iframe dragging to canvas.
  */
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import Icon from '@/components/ui/icon';
+import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Empty, EmptyDescription, EmptyTitle } from '@/components/ui/empty';
+import { Empty, EmptyDescription, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import {
   ContextMenu,
   ContextMenuContent,
@@ -33,11 +34,12 @@ import Image from 'next/image';
 import { getLayerFromTemplate, getBlockName, getBlockIcon, getLayoutTemplate, getLayoutCategory, getLayoutPreviewImage, getLayoutsByCategory, getAllLayoutKeys } from '@/lib/templates/blocks';
 import { DEFAULT_ASSETS } from '@/lib/asset-constants';
 import { canHaveChildren, assignOrderClassToNewLayer, collectAllSettingsIds, generateUniqueSettingsId } from '@/lib/layer-utils';
-import { checkCircularReference } from '@/lib/component-utils';
+import { checkCircularReference, isCircularComponentReference } from '@/lib/component-utils';
 import { cn, generateId } from '@/lib/utils';
 import { toast } from 'sonner';
 import { componentsApi } from '@/lib/api';
 import type { Layer } from '@/types';
+import ComponentCard from './ComponentCard';
 import SaveLayoutDialog from './SaveLayoutDialog';
 import { usePagesStore } from '@/stores/usePagesStore';
 import { useEditorStore } from '@/stores/useEditorStore';
@@ -155,7 +157,7 @@ const elementCategories: Record<string, string[]> = {
   Content: ['heading', 'text'],
   Actions: ['button'],
   Media: ['image', 'icon', 'video', 'audio'],
-  Form: ['form', 'input', 'textarea', 'select', 'checkbox', 'radio', 'label'],
+  Form: ['form', 'input', 'textarea', 'select', 'checkbox', 'radio', 'label', 'filter'],
   Utilities: ['localeSelector', 'htmlEmbed'],
 };
 
@@ -294,6 +296,27 @@ export default function ElementLibrary({ isOpen, onClose, defaultTab = 'elements
     }
     return defaultTab;
   });
+  const [componentSearch, setComponentSearch] = useState('');
+
+  const circularComponentIds = useMemo(() => {
+    if (!editingComponentId) return new Set<string>();
+    return new Set(
+      components
+        .filter(c => isCircularComponentReference(editingComponentId, c.id, components))
+        .map(c => c.id)
+    );
+  }, [components, editingComponentId]);
+
+  const matchingComponentIds = useMemo(() => {
+    if (!componentSearch.trim()) return null;
+    const query = componentSearch.toLowerCase();
+    return new Set(
+      components.filter(c => c.name.toLowerCase().includes(query)).map(c => c.id)
+    );
+  }, [components, componentSearch]);
+
+  const hasComponentResults = !matchingComponentIds || matchingComponentIds.size > 0;
+
   const [isEditLayoutDialogOpen, setIsEditLayoutDialogOpen] = useState(false);
   const [editingLayoutKey, setEditingLayoutKey] = useState<string>('');
   const [editingLayoutName, setEditingLayoutName] = useState<string>('');
@@ -1486,55 +1509,84 @@ export default function ElementLibrary({ isOpen, onClose, defaultTab = 'elements
               </Empty>
             ) : (
               <div className="flex flex-col pb-5">
-                <div className="py-5 h-14">
-                  <Label>Components</Label>
+                <div className="py-5 h-14 flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Icon name="search" className="absolute left-3.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground pointer-events-none" />
+                    <Input
+                      value={componentSearch}
+                      onChange={(e) => setComponentSearch(e.target.value)}
+                      placeholder="Search components..."
+                      className="h-8 text-xs pl-9"
+                    />
+                  </div>
                 </div>
-                <div className="grid grid-cols-1 gap-1.5 pb-5">
-                  {components.map((component) => (
-                    <div key={component.id} className="group flex flex-col gap-1.5">
-                      <ElementButton
-                        elementType={component.id}
-                        source="components"
-                        name={component.name}
-                        icon="component"
+                <div className="border-b border-border mb-4" />
+                {!hasComponentResults && (
+                  <Empty>
+                    <EmptyMedia variant="icon">
+                      <Icon name="component" className="size-4" />
+                    </EmptyMedia>
+                    <EmptyTitle>No matching components</EmptyTitle>
+                  </Empty>
+                )}
+                <div className={cn('grid grid-cols-1 gap-1.5 pb-5', !hasComponentResults && 'hidden')}>
+                  {components.map((component) => {
+                    const isHidden = matchingComponentIds && !matchingComponentIds.has(component.id);
+                    return (
+                      <ComponentCard
+                        key={component.id}
+                        component={component}
+                        className={cn(
+                          circularComponentIds.has(component.id) && 'opacity-40',
+                          isHidden && 'hidden',
+                        )}
                         onClick={() => handleAddComponent(component.id)}
-                        onDragStart={handleElementDragStart}
-                        variant="card"
-                      >
-                        <Image
-                          src={component.thumbnail_url
-                            ? `${component.thumbnail_url}?v=${new Date(component.updated_at).getTime()}`
-                            : DEFAULT_ASSETS.IMAGE}
-                          alt={component.name}
-                          width={640}
-                          height={262}
-                          unoptimized
-                          className="object-contain w-full h-full rounded pointer-events-none"
-                        />
-                      </ElementButton>
-                      <div className="flex items-center gap-1 px-0.5 min-w-0">
-                        <span className="flex-1 truncate text-xs font-medium" title={component.name}>
-                          {component.name}
-                        </span>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="size-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <Icon name="more" className="size-3" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={(e) => handleEditComponent(component, e)}>Edit</DropdownMenuItem>
-                            <DropdownMenuItem onClick={(e) => handleDeleteClick(component, e)}>Delete</DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    </div>
-                  ))}
+                        onMouseDown={(e) => {
+                          if (e.button !== 0) return;
+                          const startX = e.clientX;
+                          const startY = e.clientY;
+                          let dragging = false;
+
+                          const handleMouseMove = (moveEvent: MouseEvent) => {
+                            const dx = moveEvent.clientX - startX;
+                            const dy = moveEvent.clientY - startY;
+                            if (!dragging && Math.sqrt(dx * dx + dy * dy) > 5) {
+                              dragging = true;
+                              handleElementDragStart(e, component.id, 'components', component.name);
+                            }
+                          };
+
+                          const handleMouseUp = () => {
+                            document.removeEventListener('mousemove', handleMouseMove);
+                            document.removeEventListener('mouseup', handleMouseUp);
+                            if (!dragging) handleAddComponent(component.id);
+                            dragging = false;
+                          };
+
+                          document.addEventListener('mousemove', handleMouseMove);
+                          document.addEventListener('mouseup', handleMouseUp);
+                        }}
+                        actions={
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="size-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <Icon name="more" className="size-3" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onClick={(e) => handleEditComponent(component, e)}>Edit</DropdownMenuItem>
+                              <DropdownMenuItem onClick={(e) => handleDeleteClick(component, e)}>Delete</DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        }
+                      />
+                    );
+                  })}
                 </div>
               </div>
             )}

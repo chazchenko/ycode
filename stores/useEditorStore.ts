@@ -92,6 +92,12 @@ interface EditorActions {
   startCanvasLayerDrag: (layerId: string, layerName: string, parentId: string | null, originalIndex: number, siblingIds: string[], startPosition: { x: number; y: number }) => void;
   updateCanvasSiblingDropTarget: (target: CanvasSiblingDropTarget | null) => void;
   endCanvasLayerDrag: () => void;
+  /** Open a RichTextEditorSheet for the given layer (triggered from iframe on double-click) */
+  openRichTextSheet: (layerId: string) => void;
+  closeRichTextSheet: () => void;
+  // Element picker actions
+  startElementPicker: (onSelect: (layerId: string) => void, validate?: (layerId: string) => boolean, originPosition?: { x: number; y: number }) => void;
+  stopElementPicker: () => void;
 }
 
 interface EditorStoreWithHistory extends EditorState {
@@ -147,6 +153,15 @@ interface EditorStoreWithHistory extends EditorState {
   siblingLayerIds: string[];
   canvasSiblingDropTarget: CanvasSiblingDropTarget | null;
   layerDragStartPosition: { x: number; y: number } | null;
+  /** Layer ID whose content should be opened in a RichTextEditorSheet (set from iframe on double-click) */
+  richTextSheetLayerId: string | null;
+  // Element picker state (for linking filter inputs to collection conditions)
+  elementPicker: {
+    active: boolean;
+    onSelect: ((layerId: string) => void) | null;
+    validate?: ((layerId: string) => boolean) | null;
+    originPosition?: { x: number; y: number } | null;
+  } | null;
   // Computed getters
   showTextStyleControls: () => boolean;
 }
@@ -210,6 +225,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   siblingLayerIds: [],
   canvasSiblingDropTarget: null,
   layerDragStartPosition: null,
+  richTextSheetLayerId: null,
+  // Element picker initial state
+  elementPicker: null,
 
   // Computed getter: Returns true when text style controls should be shown
   // This happens when:
@@ -558,5 +576,22 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     siblingLayerIds: [],
     canvasSiblingDropTarget: null,
     layerDragStartPosition: null,
+  }),
+
+  openRichTextSheet: (layerId) => set({ richTextSheetLayerId: layerId }),
+  closeRichTextSheet: () => set({ richTextSheetLayerId: null }),
+
+  // Element picker actions
+  startElementPicker: (onSelect, validate, originPosition) => set({
+    elementPicker: {
+      active: true,
+      onSelect,
+      validate: validate ?? null,
+      originPosition: originPosition ?? null,
+    },
+  }),
+
+  stopElementPicker: () => set({
+    elementPicker: null,
   }),
 }));

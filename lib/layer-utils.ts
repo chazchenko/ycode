@@ -2,11 +2,12 @@
  * Layer utilities for rendering and manipulation
  */
 
-import { Layer, FieldVariable, CollectionVariable, CollectionItemWithValues, CollectionField, Component, Breakpoint, LayerVariables, DesignColorVariable, BoundColorStop } from '@/types';
+import { Layer, FieldVariable, CollectionVariable, CollectionItemWithValues, CollectionField, Component, ComponentVariable, Breakpoint, LayerVariables, DesignColorVariable, BoundColorStop } from '@/types';
 import { generateId } from '@/lib/utils';
 import { iconExists, IconProps } from '@/components/ui/icon';
 import { getBlockIcon, getBlockName } from '@/lib/templates/blocks';
 import { resolveInlineVariablesFromData } from '@/lib/inline-variables';
+import { applyComponentOverrides } from '@/lib/resolve-components';
 import { resolveFieldFromSources } from '@/lib/cms-variables-utils';
 import { parseMultiReferenceValue } from '@/lib/collection-utils';
 import { getInheritedValue } from '@/lib/tailwind-class-mapper';
@@ -162,6 +163,61 @@ export function canMoveLayer(layers: Layer[], layerId: string, newParentId: stri
  */
 export function getCollectionVariable(layer: Layer): CollectionVariable | null {
   return layer.variables?.collection ?? null;
+}
+
+/** Input-type layer names that can be linked to filter conditions */
+const FILTER_INPUT_TYPES = ['input', 'select', 'textarea', 'checkbox', 'radio'];
+
+/**
+ * Check if a layer is an input-type element that is a descendant of a 'filter' layer.
+ * Used to validate element picker targets for collection filter linking.
+ */
+export function isInputInsideFilter(layerId: string, layers: Layer[]): boolean {
+  const findWithAncestors = (
+    searchLayers: Layer[],
+    ancestors: Layer[]
+  ): boolean => {
+    for (const layer of searchLayers) {
+      if (layer.id === layerId) {
+        if (!FILTER_INPUT_TYPES.includes(layer.name)) return false;
+        return ancestors.some(a => a.name === 'filter');
+      }
+      if (layer.children) {
+        if (findWithAncestors(layer.children, [...ancestors, layer])) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+  return findWithAncestors(layers, []);
+}
+
+/**
+ * Get all input-type layers inside 'filter' layers from a layer tree.
+ * Returns array of { layerId, layerName, filterLayerId } for use in pickers/dropdowns.
+ */
+export function getFilterInputLayers(layers: Layer[]): Array<{ layerId: string; layerName: string; customName?: string; filterLayerId: string }> {
+  const results: Array<{ layerId: string; layerName: string; customName?: string; filterLayerId: string }> = [];
+
+  const walk = (searchLayers: Layer[], filterLayerId: string | null) => {
+    for (const layer of searchLayers) {
+      const currentFilterId = layer.name === 'filter' ? layer.id : filterLayerId;
+      if (currentFilterId && FILTER_INPUT_TYPES.includes(layer.name)) {
+        results.push({
+          layerId: layer.id,
+          layerName: layer.name,
+          customName: layer.customName,
+          filterLayerId: currentFilterId,
+        });
+      }
+      if (layer.children) {
+        walk(layer.children, currentFilterId);
+      }
+    }
+  };
+  walk(layers, null);
+  return results;
 }
 
 /**
@@ -1572,8 +1628,19 @@ function transformLayersForInstance(
  * Replaces layers with componentId with the actual component layers
  * Also applies instance-specific ID transformations to ensure unique IDs per instance
  */
-function resolveComponentsInLayers(layers: Layer[], components: Component[]): Layer[] {
-  return layers.map(layer => {
+function resolveComponentsInLayers(
+  layers: Layer[],
+  components: Component[],
+  parentComponentVariables?: ComponentVariable[],
+  parentOverrides?: Layer['componentOverrides'],
+): Layer[] {
+  // First, resolve variableLinks at this level using applyComponentOverrides
+  // This handles nested component instances whose variableLinks point to parentComponentVariables
+  const effectiveLayers = parentComponentVariables?.length
+    ? applyComponentOverrides(layers, parentOverrides, parentComponentVariables)
+    : layers;
+
+  return effectiveLayers.map(layer => {
     // If this layer is a component instance, populate its children from the component
     if (layer.componentId) {
       const component = components.find(c => c.id === layer.componentId);
@@ -1589,7 +1656,10 @@ function resolveComponentsInLayers(layers: Layer[], components: Component[]): La
           : [];
 
         // Recursively resolve any nested components within the transformed children
-        const resolvedChildren = resolveComponentsInLayers(transformedChildren, components);
+        // Pass current component's variables and this instance's overrides
+        const resolvedChildren = resolveComponentsInLayers(
+          transformedChildren, components, component.variables, layer.componentOverrides,
+        );
 
         // Build ID map for remapping root layer interactions
         // The root layer's ID becomes the instance ID, so remap any self-references
@@ -1615,6 +1685,13 @@ function resolveComponentsInLayers(layers: Layer[], components: Component[]): La
           ? remapInteractionLayerIds(componentContent.interactions, idMap)
           : componentContent.interactions;
 
+        // Apply component variable overrides and defaults to resolved children
+        const overriddenChildren = applyComponentOverrides(
+          resolvedChildren,
+          layer.componentOverrides,
+          component.variables,
+        );
+
         // Return the wrapper with the component's content merged in
         // IMPORTANT: Keep componentId so LayerRenderer knows this is a component instance
         const resolved = {
@@ -1622,8 +1699,9 @@ function resolveComponentsInLayers(layers: Layer[], components: Component[]): La
           ...componentContent, // Merge the component's properties (classes, design, etc.)
           id: layer.id, // Keep the instance's ID
           componentId: layer.componentId, // Keep the original componentId for selection
+          componentOverrides: layer.componentOverrides, // Keep instance overrides
           interactions: remappedInteractions, // Use remapped interactions
-          children: resolvedChildren,
+          children: overriddenChildren,
         };
 
         return resolved;
@@ -1634,7 +1712,7 @@ function resolveComponentsInLayers(layers: Layer[], components: Component[]): La
     if (layer.children && layer.children.length > 0) {
       return {
         ...layer,
-        children: resolveComponentsInLayers(layer.children, components),
+        children: resolveComponentsInLayers(layer.children, components, parentComponentVariables, parentOverrides),
       };
     }
 
@@ -1646,12 +1724,16 @@ function resolveComponentsInLayers(layers: Layer[], components: Component[]): La
  * Serialize layers by resolving component instances
  * Returns both the resolved layers and a map of layer IDs to their component root IDs
  */
-export function serializeLayers(layers: Layer[], components: Component[] = []): { layers: Layer[]; componentMap: Record<string, string> } {
+export function serializeLayers(
+  layers: Layer[],
+  components: Component[] = [],
+  editingComponentVariables?: ComponentVariable[],
+): { layers: Layer[]; componentMap: Record<string, string> } {
   // First build the component map (before resolving)
   const componentMap = buildComponentMap(layers);
 
   // Then resolve component instances
-  const resolvedLayers = resolveComponentsInLayers(layers, components);
+  const resolvedLayers = resolveComponentsInLayers(layers, components, editingComponentVariables);
 
   // Deep clone to avoid mutations
   return {

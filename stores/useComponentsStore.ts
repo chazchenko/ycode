@@ -15,6 +15,30 @@ import { detachStyleFromLayers, updateLayersWithStyle } from '@/lib/layer-style-
 import { generateId } from '@/lib/utils';
 import type { Component, Layer } from '@/types';
 
+/** Remove variableLinks entries that point TO a given variable ID (as parent target). */
+function removeVariableLinksPointingTo(layer: Layer, targetVariableId: string): Layer {
+  const links = layer.componentOverrides?.variableLinks;
+  if (!links) return layer;
+
+  const filtered = { ...links };
+  let changed = false;
+  for (const [childId, parentId] of Object.entries(filtered)) {
+    if (parentId === targetVariableId) {
+      delete filtered[childId];
+      changed = true;
+    }
+  }
+  if (!changed) return layer;
+
+  return {
+    ...layer,
+    componentOverrides: {
+      ...layer.componentOverrides,
+      variableLinks: Object.keys(filtered).length > 0 ? filtered : undefined,
+    },
+  };
+}
+
 /**
  * Fire-and-forget thumbnail generation for a component.
  * Dynamically imports the capture module to avoid bundling it in the initial load.
@@ -110,7 +134,8 @@ interface ComponentsActions {
   addAudioVariable: (componentId: string, name: string) => Promise<string | null>;
   addVideoVariable: (componentId: string, name: string) => Promise<string | null>;
   addIconVariable: (componentId: string, name: string) => Promise<string | null>;
-  updateTextVariable: (componentId: string, variableId: string, updates: { name?: string; default_value?: any }) => Promise<void>;
+  updateTextVariable: (componentId: string, variableId: string, updates: { name?: string; placeholder?: string; default_value?: any }) => Promise<void>;
+  reorderVariables: (componentId: string, orderedIds: string[]) => Promise<void>;
   deleteTextVariable: (componentId: string, variableId: string) => Promise<void>;
 
   // Layer style operations
@@ -908,6 +933,49 @@ export const useComponentsStore = create<ComponentsStore>((set, get) => {
       }
     },
 
+    reorderVariables: async (componentId, orderedIds) => {
+      const component = get().getComponentById(componentId);
+      if (!component) return;
+
+      const previous = component.variables || [];
+      const varMap = new Map(previous.map(v => [v.id, v]));
+      const reordered = orderedIds.map(id => varMap.get(id)).filter(Boolean) as typeof previous;
+
+      // Optimistic update
+      set((state) => ({
+        components: state.components.map((c) =>
+          c.id === componentId ? { ...c, variables: reordered } : c
+        ),
+      }));
+
+      try {
+        const response = await fetch(`/ycode/api/components/${componentId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ variables: reordered }),
+        });
+
+        const result = await response.json();
+        if (result.error) {
+          console.error('Failed to reorder variables:', result.error);
+          // Rollback on error
+          set((state) => ({
+            components: state.components.map((c) =>
+              c.id === componentId ? { ...c, variables: previous } : c
+            ),
+          }));
+        }
+      } catch (error) {
+        console.error('Failed to reorder variables:', error);
+        // Rollback on error
+        set((state) => ({
+          components: state.components.map((c) =>
+            c.id === componentId ? { ...c, variables: previous } : c
+          ),
+        }));
+      }
+    },
+
     // Delete a text variable
     deleteTextVariable: async (componentId, variableId) => {
       const component = get().getComponentById(componentId);
@@ -915,10 +983,13 @@ export const useComponentsStore = create<ComponentsStore>((set, get) => {
 
       const updatedVariables = (component.variables || []).filter((v) => v.id !== variableId);
 
+      const deletedVar = (component.variables || []).find(v => v.id === variableId);
+      const deletedVarType = deletedVar?.type || 'text';
+
       // Helper to unlink layers from the deleted variable
       const unlinkLayersFromVariable = (layers: Layer[]): Layer[] => {
         return layers.map(layer => {
-          const updatedLayer = { ...layer };
+          let updatedLayer = { ...layer };
 
           // Unlink if this layer's text variable references the deleted variable
           const textVar = layer.variables?.text;
@@ -930,9 +1001,11 @@ export const useComponentsStore = create<ComponentsStore>((set, get) => {
             };
           }
 
+          updatedLayer = removeVariableLinksPointingTo(updatedLayer, variableId);
+
           // Recursively process children
-          if (layer.children && layer.children.length > 0) {
-            updatedLayer.children = unlinkLayersFromVariable(layer.children);
+          if (updatedLayer.children && updatedLayer.children.length > 0) {
+            updatedLayer.children = unlinkLayersFromVariable(updatedLayer.children);
           }
 
           return updatedLayer;
@@ -980,24 +1053,35 @@ export const useComponentsStore = create<ComponentsStore>((set, get) => {
         // Helper to clean overrides from layers
         const cleanOverridesFromLayers = (layers: Layer[]): Layer[] => {
           return layers.map(layer => {
-            const updatedLayer = { ...layer };
+            let updatedLayer = { ...layer };
 
-            // If this is an instance of our component, clean up the override
-            if (layer.componentId === componentId && layer.componentOverrides?.text?.[variableId] !== undefined) {
-              const { [variableId]: _, ...remainingOverrides } = layer.componentOverrides.text;
-              updatedLayer.componentOverrides = {
-                ...layer.componentOverrides,
-                text: Object.keys(remainingOverrides).length > 0 ? remainingOverrides : undefined,
-              };
-              // Clean up empty componentOverrides
-              if (!updatedLayer.componentOverrides?.text) {
-                delete updatedLayer.componentOverrides;
+            if (layer.componentId === componentId && layer.componentOverrides) {
+              const overrides = { ...layer.componentOverrides };
+
+              // Clean the override value for the deleted variable's type category
+              const category = deletedVarType as keyof typeof overrides;
+              if (category !== 'variableLinks' && overrides[category]) {
+                const catOverrides = overrides[category] as Record<string, unknown>;
+                if (catOverrides[variableId] !== undefined) {
+                  const { [variableId]: _, ...remaining } = catOverrides;
+                  (overrides as Record<string, unknown>)[category] = Object.keys(remaining).length > 0 ? remaining : undefined;
+                }
               }
+
+              // Clean variableLinks that reference the deleted variable (as child key)
+              if (overrides.variableLinks?.[variableId]) {
+                const { [variableId]: _, ...remainingLinks } = overrides.variableLinks;
+                overrides.variableLinks = Object.keys(remainingLinks).length > 0 ? remainingLinks : undefined;
+              }
+
+              updatedLayer.componentOverrides = overrides;
             }
 
+            updatedLayer = removeVariableLinksPointingTo(updatedLayer, variableId);
+
             // Recursively process children
-            if (layer.children && layer.children.length > 0) {
-              updatedLayer.children = cleanOverridesFromLayers(layer.children);
+            if (updatedLayer.children && updatedLayer.children.length > 0) {
+              updatedLayer.children = cleanOverridesFromLayers(updatedLayer.children);
             }
 
             return updatedLayer;

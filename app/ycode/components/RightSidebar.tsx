@@ -19,7 +19,16 @@ import Icon from '@/components/ui/icon';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Select, SelectLabel, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  Select,
+  SelectLabel,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  SelectSeparator
+} from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
 // 4. Internal components
@@ -35,13 +44,17 @@ import VideoSettings, { type VideoSettingsValue } from './VideoSettings';
 import AudioSettings, { type AudioSettingsValue } from './AudioSettings';
 import IconSettings, { type IconSettingsValue } from './IconSettings';
 import FormSettings from './FormSettings';
+import FilterSettings from './FilterSettings';
 import AlertSettings from './AlertSettings';
 import HTMLEmbedSettings from './HTMLEmbedSettings';
 import InputSettings from './InputSettings';
 import SelectOptionsSettings from './SelectOptionsSettings';
 import LabelSettings from './LabelSettings';
 import LinkSettings, { type LinkSettingsValue } from './LinkSettings';
-import RichTextEditor from './RichTextEditor';
+import ComponentInstanceSidebar from './ComponentInstanceSidebar';
+import ComponentVariableOverrides from './ComponentVariableOverrides';
+import ExpandableRichTextEditor from './ExpandableRichTextEditor';
+import ComponentVariableLabel, { VARIABLE_TYPE_ICONS } from './ComponentVariableLabel';
 import InteractionsPanel from './InteractionsPanel';
 import LayoutControls from './LayoutControls';
 import LayerStylesPanel from './LayerStylesPanel';
@@ -69,29 +82,25 @@ import { useLayerLocks } from '@/hooks/use-layer-locks';
 import { classesToDesign, mergeDesign, removeConflictsForClass, getRemovedPropertyClasses } from '@/lib/tailwind-class-mapper';
 import { cn } from '@/lib/utils';
 import { sanitizeHtmlId } from '@/lib/html-utils';
-import { isFieldVariable, getCollectionVariable, findParentCollectionLayer, findAllParentCollectionLayers, isTextEditable, findLayerWithParent, resetBindingsOnCollectionSourceChange } from '@/lib/layer-utils';
+import { isFieldVariable, getCollectionVariable, findParentCollectionLayer, findAllParentCollectionLayers, isTextEditable, findLayerWithParent, resetBindingsOnCollectionSourceChange, isInputInsideFilter } from '@/lib/layer-utils';
 import { detachSpecificLayerFromComponent } from '@/lib/component-utils';
 import { convertContentToValue, parseValueToContent } from '@/lib/cms-variables-utils';
+import { createTextComponentVariableValue } from '@/lib/variable-utils';
+import { getRichTextValue } from '@/lib/tiptap-utils';
 import { DEFAULT_TEXT_STYLES, getTextStyle } from '@/lib/text-format-utils';
-import { buildFieldGroups, getFieldIcon, isMultipleAssetField, MULTI_ASSET_COLLECTION_ID } from '@/lib/collection-field-utils';
+import { buildFieldGroupsForLayer, getFieldIcon, isMultipleAssetField, MULTI_ASSET_COLLECTION_ID } from '@/lib/collection-field-utils';
 
 // 7. Types
-import type { Layer, FieldVariable, CollectionField, CollectionVariable } from '@/types';
-import { createTextComponentVariableValue, extractTiptapFromComponentVariable } from '@/lib/variable-utils';
+import type { Layer, FieldVariable, CollectionField, CollectionVariable, ComponentVariable } from '@/types';
 import { Empty, EmptyDescription, EmptyMedia, EmptyTitle } from '@/components/ui/empty';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuPortal,
-  DropdownMenuSeparator,
-  DropdownMenuShortcut,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Separator } from '@/components/ui/separator';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface RightSidebarProps {
   selectedLayerId: string | null;
@@ -157,7 +166,6 @@ const RightSidebar = React.memo(function RightSidebar({
   const [fieldBindingOpen, setFieldBindingOpen] = useState(true);
   const [contentOpen, setContentOpen] = useState(true);
   const [localeLabelOpen, setLocaleLabelOpen] = useState(true);
-  const [variablesOpen, setVariablesOpen] = useState(true);
   const [variablesDialogOpen, setVariablesDialogOpen] = useState(false);
   const [variablesDialogInitialId, setVariablesDialogInitialId] = useState<string | null>(null);
 
@@ -179,6 +187,9 @@ const RightSidebar = React.memo(function RightSidebar({
   const clearActiveInteraction = useEditorStore((state) => state.clearActiveInteraction);
   const activeTextStyleKey = useEditorStore((state) => state.activeTextStyleKey);
   const showTextStyleControls = useEditorStore((state) => state.showTextStyleControls());
+  const startElementPicker = useEditorStore((state) => state.startElementPicker);
+  const stopElementPicker = useEditorStore((state) => state.stopElementPicker);
+  const isElementPickerActive = useEditorStore((state) => !!state.elementPicker?.active);
 
   // Check if text is being edited on canvas
   const isTextEditingOnCanvas = useCanvasTextEditorStore((state) => state.isEditing);
@@ -196,7 +207,7 @@ const RightSidebar = React.memo(function RightSidebar({
 
   const getComponentById = useComponentsStore((state) => state.getComponentById);
   const componentDrafts = useComponentsStore((state) => state.componentDrafts);
-  const updateComponentDraft = useComponentsStore((state) => state.updateComponentDraft);
+  const addTextVariable = useComponentsStore((state) => state.addTextVariable);
   const updateTextVariable = useComponentsStore((state) => state.updateTextVariable);
 
   const collections = useCollectionsStore((state) => state.collections);
@@ -230,6 +241,9 @@ const RightSidebar = React.memo(function RightSidebar({
   const selectedLayer: Layer | null = useMemo(() => {
     return findLayerById(selectedLayerId);
   }, [selectedLayerId, findLayerById]);
+
+  const selectedLayerRef = useRef(selectedLayer);
+  selectedLayerRef.current = selectedLayer;
 
   // Get the layer whose interactions we're editing (different from selected layer during target selection)
   const interactionOwnerLayer: Layer | null = useMemo(() => {
@@ -400,7 +414,7 @@ const RightSidebar = React.memo(function RightSidebar({
     const containerTags = [
       'div', 'container', 'section', 'nav', 'main', 'aside',
       'header', 'footer', 'article', 'figure', 'figcaption',
-      'details', 'summary'
+      'details', 'summary', 'label'
     ];
     return containerTags.includes(layer.name || '') ||
            containerTags.includes(layer.settings?.tag || '');
@@ -840,21 +854,7 @@ const RightSidebar = React.memo(function RightSidebar({
 
   // Get content value for display (returns Tiptap JSON or string)
   const getContentValue = useCallback((layer: Layer | null): any => {
-    if (!layer) return { type: 'doc', content: [{ type: 'paragraph' }] };
-
-    // Check layer.variables.text
-    if (layer.variables?.text) {
-      // DynamicRichTextVariable (new format with formatting support)
-      if (layer.variables.text.type === 'dynamic_rich_text') {
-        // Return Tiptap JSON directly for RichTextEditor (withFormatting mode)
-        return layer.variables.text.data.content;
-      } else if (layer.variables.text.type === 'dynamic_text') {
-        // Return string for DynamicTextVariable
-        return layer.variables.text.data.content;
-      }
-    }
-
-    return { type: 'doc', content: [{ type: 'paragraph' }] };
+    return getRichTextValue(layer?.variables);
   }, []);
 
   // Handle collection binding change (also resets child bindings when source changes)
@@ -869,6 +869,8 @@ const RightSidebar = React.memo(function RightSidebar({
           id: collectionId,
           sort_by: currentCollectionVariable?.sort_by,
           sort_order: currentCollectionVariable?.sort_order,
+          sort_by_inputLayerId: currentCollectionVariable?.sort_by_inputLayerId,
+          sort_order_inputLayerId: currentCollectionVariable?.sort_order_inputLayerId,
         } : { id: '', source_field_id: undefined, source_field_type: undefined }
       }
     });
@@ -895,25 +897,26 @@ const RightSidebar = React.memo(function RightSidebar({
     }, 0);
   };
 
-  // Handle sort by change
-  const handleSortByChange = (sortBy: string) => {
-    if (selectedLayerId && selectedLayer) {
-      const currentCollectionVariable = getCollectionVariable(selectedLayer);
-      if (currentCollectionVariable) {
-        handleLayerUpdate(selectedLayerId, {
-          variables: {
-            ...selectedLayer?.variables,
-            collection: {
-              ...currentCollectionVariable,
-              sort_by: sortBy,
-              // Reset sort_order to 'asc' when changing sort_by
-              sort_order: (sortBy !== 'none' && sortBy !== 'manual' && sortBy !== 'random') ? 'asc' : currentCollectionVariable.sort_order,
-            }
-          }
-        });
+  const SORT_INPUT_VALUE_OPTION = '__input_value__';
+  const sortByTriggerRef = useRef<HTMLButtonElement>(null);
+  const sortOrderTriggerRef = useRef<HTMLButtonElement>(null);
+
+  const handleSortByChange = useCallback((sortBy: string) => {
+    if (!selectedLayerId || !selectedLayer) return;
+    const currentCollectionVariable = getCollectionVariable(selectedLayer);
+    if (!currentCollectionVariable) return;
+    handleLayerUpdate(selectedLayerId, {
+      variables: {
+        ...selectedLayer.variables,
+        collection: {
+          ...currentCollectionVariable,
+          sort_by: sortBy,
+          sort_by_inputLayerId: undefined,
+          sort_order: (sortBy !== 'none' && sortBy !== 'manual' && sortBy !== 'random') ? 'asc' : currentCollectionVariable.sort_order,
+        }
       }
-    }
-  };
+    });
+  }, [selectedLayerId, selectedLayer, handleLayerUpdate]);
 
   // Handle reference field selection (for reference, multi-reference, or multi-asset as collection source)
   // Also resets child bindings when source changes
@@ -1028,6 +1031,8 @@ const RightSidebar = React.memo(function RightSidebar({
         source_field_type: undefined,
         sort_by: currentCollectionVariable?.sort_by,
         sort_order: currentCollectionVariable?.sort_order,
+        sort_by_inputLayerId: currentCollectionVariable?.sort_by_inputLayerId,
+        sort_order_inputLayerId: currentCollectionVariable?.sort_order_inputLayerId,
       };
     }
 
@@ -1079,22 +1084,96 @@ const RightSidebar = React.memo(function RightSidebar({
     return `collection:${collectionVariable.id}`;
   }, [selectedLayer]);
 
-  // Handle sort order change
-  const handleSortOrderChange = (sortOrder: 'asc' | 'desc') => {
-    if (selectedLayerId && selectedLayer) {
-      const currentCollectionVariable = getCollectionVariable(selectedLayer);
-      if (currentCollectionVariable) {
-        handleLayerUpdate(selectedLayerId, {
-          variables: {
-            ...selectedLayer?.variables,
-            collection: {
-              ...currentCollectionVariable,
-              sort_order: sortOrder,
-            }
-          }
-        });
+  const handleSortOrderChange = useCallback((sortOrder: 'asc' | 'desc') => {
+    if (!selectedLayerId || !selectedLayer) return;
+    const currentCollectionVariable = getCollectionVariable(selectedLayer);
+    if (!currentCollectionVariable) return;
+    handleLayerUpdate(selectedLayerId, {
+      variables: {
+        ...selectedLayer.variables,
+        collection: {
+          ...currentCollectionVariable,
+          sort_order: sortOrder,
+          sort_order_inputLayerId: undefined,
+        }
       }
+    });
+  }, [selectedLayerId, selectedLayer, handleLayerUpdate]);
+
+  const handlePickSortInput = useCallback((
+    key: 'sort_by_inputLayerId' | 'sort_order_inputLayerId',
+    origin?: { x: number; y: number },
+  ) => {
+    if (!selectedLayerId || !selectedLayer) return;
+    const currentCollectionVariable = getCollectionVariable(selectedLayer);
+    if (!currentCollectionVariable) return;
+
+    startElementPicker(
+      (layerId: string) => {
+        const freshLayer = selectedLayerRef.current;
+        if (!freshLayer) return;
+        const freshVariable = getCollectionVariable(freshLayer);
+        if (!freshVariable) return;
+        handleLayerUpdate(freshLayer.id, {
+          variables: {
+            ...freshLayer.variables,
+            collection: {
+              ...freshVariable,
+              [key]: layerId,
+              ...(key === 'sort_by_inputLayerId' ? { sort_by: 'none' } : {}),
+              ...(key === 'sort_order_inputLayerId' ? { sort_order: undefined } : {}),
+            },
+          },
+        });
+        stopElementPicker();
+      },
+      (layerId: string) => isInputInsideFilter(layerId, allLayers),
+      origin,
+    );
+  }, [selectedLayerId, selectedLayer, startElementPicker, stopElementPicker, allLayers, handleLayerUpdate]);
+
+  const handleSortBySelectValue = (value: string) => {
+    if (value === SORT_INPUT_VALUE_OPTION) {
+      const rect = sortByTriggerRef.current?.getBoundingClientRect();
+      const origin = rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : undefined;
+      handlePickSortInput('sort_by_inputLayerId', origin);
+      return;
     }
+    handleSortByChange(value);
+  };
+
+  const handleSortOrderSelectValue = (value: string) => {
+    if (value === SORT_INPUT_VALUE_OPTION) {
+      const rect = sortOrderTriggerRef.current?.getBoundingClientRect();
+      const origin = rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : undefined;
+      handlePickSortInput('sort_order_inputLayerId', origin);
+      return;
+    }
+    handleSortOrderChange(value as 'asc' | 'desc');
+  };
+
+  const getSortLinkedInputName = (inputLayerId: string): string => {
+    const inputLayer = findLayerById(inputLayerId);
+    if (!inputLayer) return `Unknown [${inputLayerId}]`;
+    const layerName = inputLayer.customName || inputLayer.name || 'Input';
+    return `${layerName} [${inputLayerId}]`;
+  };
+
+  const handleUnlinkSortInput = (key: 'sort_by_inputLayerId' | 'sort_order_inputLayerId') => {
+    if (!selectedLayerId || !selectedLayer) return;
+    const currentCollectionVariable = getCollectionVariable(selectedLayer);
+    if (!currentCollectionVariable) return;
+    handleLayerUpdate(selectedLayerId, {
+      variables: {
+        ...selectedLayer.variables,
+        collection: {
+          ...currentCollectionVariable,
+          [key]: undefined,
+          ...(key === 'sort_by_inputLayerId' ? { sort_by: 'none' } : {}),
+          ...(key === 'sort_order_inputLayerId' ? { sort_order: 'asc' } : {}),
+        },
+      },
+    });
   };
 
   // Handle limit change
@@ -1427,24 +1506,6 @@ const RightSidebar = React.memo(function RightSidebar({
     return findParentCollectionLayer(layers, selectedLayerId);
   }, [selectedLayerId, editingComponentId, componentDrafts, currentPageId, draftsByPageId]);
 
-  // Find all parent collection layers (for nested collections)
-  const allParentCollectionLayers = useMemo(() => {
-    if (!selectedLayerId || !currentPageId) return [];
-
-    // Get layers from either component draft or page draft
-    let layers: Layer[] = [];
-    if (editingComponentId) {
-      layers = componentDrafts[editingComponentId] || [];
-    } else {
-      const draft = draftsByPageId[currentPageId];
-      layers = draft ? draft.layers : [];
-    }
-
-    if (!layers.length) return [];
-
-    return findAllParentCollectionLayers(layers, selectedLayerId);
-  }, [selectedLayerId, editingComponentId, componentDrafts, currentPageId, draftsByPageId]);
-
   // Get collection fields if parent collection layer exists
   const currentPage = useMemo(() => {
     if (!currentPageId) {
@@ -1471,32 +1532,18 @@ const RightSidebar = React.memo(function RightSidebar({
   }, [parentCollectionLayer, fields, currentPage]);
 
   // Build field groups for multi-source inline variable selection
-  // This allows showing both collection layer fields AND page collection fields when applicable
   const fieldGroups = useMemo(() => {
-    const collectionVariable = parentCollectionLayer ? getCollectionVariable(parentCollectionLayer) : null;
-
-    // Check if parent is a multi-asset collection
-    const isMultiAssetParent = collectionVariable?.source_field_type === 'multi_asset';
-    const multiAssetContext = isMultiAssetParent && collectionVariable.source_field_id
-      ? {
-        sourceFieldId: collectionVariable.source_field_id,
-        source: (collectionVariable.source_field_source || 'collection') as 'page' | 'collection',
-      }
-      : null;
-
-    // Get all parent collection layers (closest first)
-    const parentCollectionLayers = allParentCollectionLayers
-      .map(layer => ({ layerId: layer.id, collectionId: getCollectionVariable(layer)?.id }))
-      .filter((item): item is { layerId: string; collectionId: string } => !!item.collectionId);
-
-    return buildFieldGroups({
-      parentCollectionLayers,
-      page: currentPage,
-      fieldsByCollectionId: fields,
-      collections,
-      multiAssetContext,
-    });
-  }, [parentCollectionLayer, allParentCollectionLayers, currentPage, fields, collections]);
+    if (!selectedLayerId) return undefined;
+    let layers: Layer[] = [];
+    if (editingComponentId) {
+      layers = componentDrafts[editingComponentId] || [];
+    } else if (currentPageId) {
+      const draft = draftsByPageId[currentPageId];
+      layers = draft ? draft.layers : [];
+    }
+    if (!layers.length) return undefined;
+    return buildFieldGroupsForLayer(selectedLayerId, layers, currentPage, fields, collections);
+  }, [selectedLayerId, editingComponentId, componentDrafts, currentPageId, draftsByPageId, currentPage, fields, collections]);
 
   // Get collection fields for the currently selected collection layer (for Sort By dropdown)
   const selectedCollectionFields = useMemo(() => {
@@ -1628,471 +1675,20 @@ const RightSidebar = React.memo(function RightSidebar({
   const isComponentInstance = !!selectedLayer.componentId;
   const component = isComponentInstance ? getComponentById(selectedLayer.componentId!) : null;
 
-  // If it's a component instance, show a message with edit button instead of design properties
-  // This works both when editing a page OR when editing a component (nested component instances)
+  // If it's a component instance, show component sidebar instead of design properties
   if (isComponentInstance && component) {
-    const handleEditMasterComponent = async () => {
-      const { loadComponentDraft, getComponentById } = useComponentsStore.getState();
-      const { setSelectedLayerId: setLayerId, pushComponentNavigation } = useEditorStore.getState();
-      const { pages } = usePagesStore.getState();
-
-      // Clear selection FIRST to release lock on current page's channel
-      // before switching to component's channel
-      setLayerId(null);
-
-      // Push current context to navigation stack before entering component edit mode
-      if (editingComponentId) {
-        // We're currently editing a component, push it to stack
-        const currentComponent = getComponentById(editingComponentId);
-        if (currentComponent) {
-          pushComponentNavigation({
-            type: 'component',
-            id: editingComponentId,
-            name: currentComponent.name,
-            layerId: selectedLayerId,
-          });
-        }
-      } else if (currentPageId) {
-        // We're on a page, push it to stack
-        const currentPage = pages.find((p) => p.id === currentPageId);
-        if (currentPage) {
-          pushComponentNavigation({
-            type: 'page',
-            id: currentPageId,
-            name: currentPage.name,
-            layerId: selectedLayerId,
-          });
-        }
-      }
-
-      // Load the component's layers into draft (async to ensure proper cache sync)
-      await loadComponentDraft(component.id);
-
-      // Open component (updates state + URL, changes lock channel)
-      openComponent(component.id, currentPageId, undefined, selectedLayerId);
-
-      // Select the first layer of the component (now on component channel)
-      if (component.layers && component.layers.length > 0) {
-        setLayerId(component.layers[0].id);
-      }
-    };
-
-    const allVariables = component.variables || [];
-    const textVariables = allVariables.filter(v => !v.type || v.type === 'text');
-    const imageVariables = allVariables.filter(v => v.type === 'image');
-    const linkVariables = allVariables.filter(v => v.type === 'link');
-    const audioVariables = allVariables.filter(v => v.type === 'audio');
-    const videoVariables = allVariables.filter(v => v.type === 'video');
-    const iconVariables = allVariables.filter(v => v.type === 'icon');
-    const currentTextOverrides = selectedLayer.componentOverrides?.text || {};
-    const currentImageOverrides = selectedLayer.componentOverrides?.image || {};
-    const currentLinkOverrides = selectedLayer.componentOverrides?.link || {};
-    const currentAudioOverrides = selectedLayer.componentOverrides?.audio || {};
-    const currentVideoOverrides = selectedLayer.componentOverrides?.video || {};
-    const currentIconOverrides = selectedLayer.componentOverrides?.icon || {};
-
-    // Extract Tiptap content from text ComponentVariableValue
-    // Falls back to variable's default_value if no override is set
-    const getOverrideValue = (variableId: string) => {
-      const overrideValue = currentTextOverrides[variableId];
-      const variableDef = textVariables.find(v => v.id === variableId);
-
-      // Use override if set, otherwise fall back to default value
-      const value = overrideValue ?? variableDef?.default_value;
-
-      // Extract Tiptap content using utility function
-      return extractTiptapFromComponentVariable(value);
-    };
-
-    // Get image override value (ImageSettingsValue)
-    const getImageOverrideValue = (variableId: string) => {
-      const overrideValue = currentImageOverrides[variableId];
-      const variableDef = imageVariables.find(v => v.id === variableId);
-
-      // Use override if set, otherwise fall back to default value
-      return (overrideValue ?? variableDef?.default_value) as ImageSettingsValue | undefined;
-    };
-
-    // Store override as text ComponentVariableValue (DynamicRichTextVariable)
-    const handleVariableOverrideChange = (variableId: string, tiptapContent: any) => {
-      // Store as DynamicRichTextVariable to preserve formatting
-      const variableValue = createTextComponentVariableValue(tiptapContent);
-      onLayerUpdate(selectedLayerId!, {
-        componentOverrides: {
-          ...selectedLayer.componentOverrides,
-          text: {
-            ...currentTextOverrides,
-            [variableId]: variableValue,
-          },
-        },
-      });
-    };
-
-    // Store image override as ImageSettingsValue
-    const handleImageVariableOverrideChange = (variableId: string, value: ImageSettingsValue) => {
-      onLayerUpdate(selectedLayerId!, {
-        componentOverrides: {
-          ...selectedLayer.componentOverrides,
-          image: {
-            ...currentImageOverrides,
-            [variableId]: value,
-          },
-        },
-      });
-    };
-
-    // Get link override value (LinkSettingsValue)
-    const getLinkOverrideValue = (variableId: string) => {
-      const overrideValue = currentLinkOverrides[variableId];
-      const variableDef = linkVariables.find(v => v.id === variableId);
-
-      // Use override if set, otherwise fall back to default value
-      return (overrideValue ?? variableDef?.default_value) as LinkSettingsValue | undefined;
-    };
-
-    // Store link override as LinkSettingsValue
-    const handleLinkVariableOverrideChange = (variableId: string, value: LinkSettingsValue) => {
-      onLayerUpdate(selectedLayerId!, {
-        componentOverrides: {
-          ...selectedLayer.componentOverrides,
-          link: {
-            ...currentLinkOverrides,
-            [variableId]: value,
-          },
-        },
-      });
-    };
-
-    // Get audio override value
-    const getAudioOverrideValue = (variableId: string) => {
-      const overrideValue = currentAudioOverrides[variableId];
-      const variableDef = audioVariables.find(v => v.id === variableId);
-      return (overrideValue ?? variableDef?.default_value) as AudioSettingsValue | undefined;
-    };
-
-    const handleAudioVariableOverrideChange = (variableId: string, value: AudioSettingsValue) => {
-      onLayerUpdate(selectedLayerId!, {
-        componentOverrides: {
-          ...selectedLayer.componentOverrides,
-          audio: {
-            ...currentAudioOverrides,
-            [variableId]: value,
-          },
-        },
-      });
-    };
-
-    // Get video override value
-    const getVideoOverrideValue = (variableId: string) => {
-      const overrideValue = currentVideoOverrides[variableId];
-      const variableDef = videoVariables.find(v => v.id === variableId);
-      return (overrideValue ?? variableDef?.default_value) as VideoSettingsValue | undefined;
-    };
-
-    const handleVideoVariableOverrideChange = (variableId: string, value: VideoSettingsValue) => {
-      onLayerUpdate(selectedLayerId!, {
-        componentOverrides: {
-          ...selectedLayer.componentOverrides,
-          video: {
-            ...currentVideoOverrides,
-            [variableId]: value,
-          },
-        },
-      });
-    };
-
-    // Get icon override value
-    const getIconOverrideValue = (variableId: string) => {
-      const overrideValue = currentIconOverrides[variableId];
-      const variableDef = iconVariables.find(v => v.id === variableId);
-      return (overrideValue ?? variableDef?.default_value) as IconSettingsValue | undefined;
-    };
-
-    const handleIconVariableOverrideChange = (variableId: string, value: IconSettingsValue) => {
-      onLayerUpdate(selectedLayerId!, {
-        componentOverrides: {
-          ...selectedLayer.componentOverrides,
-          icon: {
-            ...currentIconOverrides,
-            [variableId]: value,
-          },
-        },
-      });
-    };
-
-    // Handle detaching from component (converts instance to regular layers)
-    const handleDetachFromComponent = () => {
-      if (!selectedLayer.componentId) return;
-
-      // Use the shared utility function for detaching
-      const newLayers = detachSpecificLayerFromComponent(allLayers, selectedLayerId!, component || undefined);
-
-      if (editingComponentId) {
-        // We're editing a component, update component draft
-        updateComponentDraft(editingComponentId, newLayers);
-      } else if (currentPageId) {
-        // We're on a page, update page draft
-        setDraftLayers(currentPageId, newLayers);
-      }
-
-      // Clear selection after detaching
-      useEditorStore.getState().setSelectedLayerId(null);
-    };
-
-    // Handle resetting all overrides to defaults
-    const handleResetAllOverrides = () => {
-      if (!selectedLayerId) return;
-
-      onLayerUpdate(selectedLayerId, {
-        componentOverrides: {
-          ...selectedLayer.componentOverrides,
-          text: {},
-          image: {},
-          link: {},
-          audio: {},
-          video: {},
-          icon: {},
-        },
-      });
-    };
-
     return (
-      <div className="w-64 shrink-0 bg-background border-l flex flex-col p-4 pb-0 h-full overflow-hidden">
-        <Tabs value="" className="flex flex-col min-h-0 gap-0!">
-          <div>
-            <TabsList className="w-full">
-              <TabsTrigger value="design" disabled>Design</TabsTrigger>
-              <TabsTrigger value="settings" disabled>Settings</TabsTrigger>
-              <TabsTrigger value="interactions" disabled>Interactions</TabsTrigger>
-            </TabsList>
-          </div>
-
-          <hr className="mt-4" />
-
-          <div className="flex flex-col divide-y divide-border overflow-y-auto no-scrollbar">
-            <SettingsPanel
-              title="Component instance"
-              isOpen={true}
-              onToggle={() => {}}
-              action={
-                <div className="flex items-center gap-1">
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button size="xs" variant="ghost">
-                        <Icon name="more" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem
-                        onClick={handleResetAllOverrides}
-                        disabled={Object.keys(currentTextOverrides).length === 0 && Object.keys(currentImageOverrides).length === 0 && Object.keys(currentLinkOverrides).length === 0 && Object.keys(currentAudioOverrides).length === 0 && Object.keys(currentVideoOverrides).length === 0 && Object.keys(currentIconOverrides).length === 0}
-                      >
-                        <Icon name="undo" />
-                        Reset all overrides
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={handleDetachFromComponent}>
-                        <Icon name="detach" />
-                        Detach from component
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-              }
-            >
-              <div className="bg-purple-500/20 text-purple-700 dark:text-purple-300 pl-2 pr-3 h-10 rounded-lg flex items-center gap-2">
-                <div className="p-1.5 bg-current/20 rounded-xl">
-                  <Icon name="component" className="size-3" />
-                </div>
-                <span>{component.name}</span>
-                {(Object.keys(currentTextOverrides).length > 0 || Object.keys(currentImageOverrides).length > 0 || Object.keys(currentLinkOverrides).length > 0 || Object.keys(currentAudioOverrides).length > 0 || Object.keys(currentVideoOverrides).length > 0 || Object.keys(currentIconOverrides).length > 0) && (
-                    <span className="ml-auto text-[10px] italic text-orange-600 dark:text-orange-200">Overridden</span>
-                )}
-              </div>
-
-              <Button
-                size="sm" variant="secondary"
-                onClick={handleEditMasterComponent}
-              >
-                <Icon name="edit" />
-                Edit component
-              </Button>
-
-            </SettingsPanel>
-
-            <SettingsPanel
-              title="Variables"
-              isOpen={variablesOpen}
-              onToggle={() => setVariablesOpen(!variablesOpen)}
-            >
-              <div className="flex flex-col gap-6">
-                {/* Text variable overrides */}
-                {textVariables.length > 0 && (
-                  <div className="flex flex-col gap-3">
-                    {textVariables.map((variable) => (
-                      <div key={variable.id} className="grid grid-cols-3 gap-2">
-                        <Label variant="muted" className="truncate">
-                          {variable.name}
-                        </Label>
-                        <div className="col-span-2 *:w-full">
-                          <RichTextEditor
-                            value={getOverrideValue(variable.id)}
-                            onChange={(val) => handleVariableOverrideChange(variable.id, val)}
-                            placeholder="Enter value..."
-                            fieldGroups={fieldGroups}
-                            allFields={fields}
-                            collections={collections}
-                            withFormatting={true}
-                            showFormattingToolbar={false}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Image variable overrides */}
-                {imageVariables.length > 0 && (
-                  <div className="flex flex-col gap-3">
-                    {imageVariables.map((variable) => (
-                      <div key={variable.id} className="grid grid-cols-3 gap-2 items-start">
-                        <Label variant="muted" className="truncate pt-2">
-                          {variable.name}
-                        </Label>
-                        <div className="col-span-2">
-                          <ImageSettings
-                            mode="standalone"
-                            value={getImageOverrideValue(variable.id)}
-                            onChange={(val) => handleImageVariableOverrideChange(variable.id, val)}
-                            fieldGroups={fieldGroups}
-                            allFields={fields}
-                            collections={collections}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Link variable overrides */}
-                {linkVariables.length > 0 && (
-                  <div className="flex flex-col gap-3">
-                    {linkVariables.map((variable) => (
-                      <div key={variable.id} className="grid grid-cols-3 gap-2 items-start">
-                        <Label variant="muted" className="truncate pt-2">
-                          {variable.name}
-                        </Label>
-                        <div className="col-span-2">
-                          <LinkSettings
-                            mode="standalone"
-                            value={getLinkOverrideValue(variable.id)}
-                            onChange={(val) => handleLinkVariableOverrideChange(variable.id, val)}
-                            fieldGroups={fieldGroups}
-                            allFields={fields}
-                            collections={collections}
-                            isInsideCollectionLayer={!!parentCollectionLayer}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Audio variable overrides */}
-                {audioVariables.length > 0 && (
-                  <div className="flex flex-col gap-3">
-                    {audioVariables.map((variable) => (
-                      <div key={variable.id} className="grid grid-cols-3 gap-2 items-start">
-                        <Label variant="muted" className="truncate pt-2">
-                          {variable.name}
-                        </Label>
-                        <div className="col-span-2">
-                          <AudioSettings
-                            mode="standalone"
-                            value={getAudioOverrideValue(variable.id)}
-                            onChange={(val) => handleAudioVariableOverrideChange(variable.id, val)}
-                            fieldGroups={fieldGroups}
-                            allFields={fields}
-                            collections={collections}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Video variable overrides */}
-                {videoVariables.length > 0 && (
-                  <div className="flex flex-col gap-3">
-                    {videoVariables.map((variable) => (
-                      <div key={variable.id} className="grid grid-cols-3 gap-2 items-start">
-                        <Label variant="muted" className="truncate pt-2">
-                          {variable.name}
-                        </Label>
-                        <div className="col-span-2">
-                          <VideoSettings
-                            mode="standalone"
-                            value={getVideoOverrideValue(variable.id)}
-                            onChange={(val) => handleVideoVariableOverrideChange(variable.id, val)}
-                            fieldGroups={fieldGroups}
-                            allFields={fields}
-                            collections={collections}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Icon variable overrides */}
-                {iconVariables.length > 0 && (
-                  <div className="flex flex-col gap-3">
-                    {iconVariables.map((variable) => (
-                      <div key={variable.id} className="grid grid-cols-3 gap-2 items-start">
-                        <Label variant="muted" className="truncate pt-2">
-                          {variable.name}
-                        </Label>
-                        <div className="col-span-2">
-                          <IconSettings
-                            mode="standalone"
-                            value={getIconOverrideValue(variable.id)}
-                            onChange={(val) => handleIconVariableOverrideChange(variable.id, val)}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {allVariables.length === 0 && (
-                <div className="flex-1 flex items-center justify-center">
-                  <Empty>
-                    <EmptyMedia variant="icon">
-                      <Icon name="component" className="size-3.5" />
-                    </EmptyMedia>
-                    <EmptyTitle>No variables set</EmptyTitle>
-                    <EmptyDescription>
-                      Enter component editing mode to add variables.
-                    </EmptyDescription>
-                    <div>
-                      <Button
-                        onClick={handleEditMasterComponent}
-                        variant="secondary"
-                        size="sm"
-                      >
-                        Edit component
-                      </Button>
-                    </div>
-                  </Empty>
-                </div>
-              )}
-
-            </SettingsPanel>
-
-          </div>
-
-        </Tabs>
-      </div>
+      <ComponentInstanceSidebar
+        selectedLayerId={selectedLayerId!}
+        selectedLayer={selectedLayer}
+        component={component}
+        onLayerUpdate={onLayerUpdate}
+        allLayers={allLayers}
+        fieldGroups={fieldGroups}
+        fields={fields}
+        collections={collections}
+        isInsideCollectionLayer={!!parentCollectionLayer}
+      />
     );
   }
 
@@ -2323,6 +1919,7 @@ const RightSidebar = React.memo(function RightSidebar({
                           <SelectItem value="figcaption">Figcaption</SelectItem>
                           <SelectItem value="details">Details</SelectItem>
                           <SelectItem value="summary">Summary</SelectItem>
+                          <SelectItem value="label">Label</SelectItem>
                         </SelectGroup>
                       </SelectContent>
                     </Select>
@@ -2406,48 +2003,27 @@ const RightSidebar = React.memo(function RightSidebar({
                 >
                   <div className="grid grid-cols-3">
                     {!(isTextEditingOnCanvas && editingLayerIdOnCanvas === selectedLayerId) && (
-                      <div className="flex items-start gap-1 py-2">
-                        {editingComponentId ? (
-                          <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                              <Button
-                                variant="variable"
-                                size="xs"
-                                className="has-[>svg]:px-0 py-"
-                              >
-                                <Icon name="plus-circle-solid" />
-                                Content
-                              </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                              {componentVariables.length > 0 && (
-                                <DropdownMenuSub>
-                                  <DropdownMenuSubTrigger>Link to variable</DropdownMenuSubTrigger>
-                                  <DropdownMenuPortal>
-                                    <DropdownMenuSubContent>
-                                      {componentVariables.map((variable) => (
-                                        <DropdownMenuItem
-                                          key={variable.id}
-                                          onClick={() => handleLinkVariable(variable.id)}
-                                        >
-                                          {variable.name}
-                                          {linkedVariableId === variable.id && (
-                                            <Icon name="check" className="ml-auto size-3" />
-                                          )}
-                                        </DropdownMenuItem>
-                                      ))}
-                                    </DropdownMenuSubContent>
-                                  </DropdownMenuPortal>
-                                </DropdownMenuSub>
-                              )}
-                              <DropdownMenuItem onClick={() => openVariablesDialog()}>
-                                Manage variables
-                              </DropdownMenuItem>
-                            </DropdownMenuContent>
-                          </DropdownMenu>
-                        ) : (
-                          <Label variant="muted">Content</Label>
-                        )}
+                      <div className="flex items-start gap-1 py-1">
+                        <ComponentVariableLabel
+                          label="Content"
+                          isEditingComponent={!!editingComponentId}
+                          variables={componentVariables}
+                          linkedVariableId={linkedVariableId}
+                          onLinkVariable={handleLinkVariable}
+                          onManageVariables={() => openVariablesDialog()}
+                          onCreateVariable={editingComponentId ? async () => {
+                            const contentValue = getContentValue(selectedLayer);
+                            const newId = await addTextVariable(editingComponentId, 'Text');
+                            if (newId) {
+                              await updateTextVariable(editingComponentId, newId, {
+                                default_value: createTextComponentVariableValue(contentValue),
+                              });
+                              handleLinkVariable(newId);
+                              openVariablesDialog(newId);
+                            }
+                          } : undefined}
+                          className="py-1"
+                        />
                       </div>
                     )}
 
@@ -2460,7 +2036,10 @@ const RightSidebar = React.memo(function RightSidebar({
                           onClick={() => openVariablesDialog(linkedVariable.id)}
                         >
                           <div>
-                            <span>{linkedVariable.name}</span>
+                            <span className="flex items-center gap-1.5">
+                              <Icon name={VARIABLE_TYPE_ICONS[linkedVariable.type || 'text']} className="size-3 opacity-60" />
+                              {linkedVariable.name}
+                            </span>
                             <Button
                               className="size-4! p-0!"
                               variant="outline"
@@ -2477,15 +2056,15 @@ const RightSidebar = React.memo(function RightSidebar({
                           <EmptyDescription>You are editing the text directly on canvas.</EmptyDescription>
                         </Empty>
                       ) : (
-                        <RichTextEditor
+                        <ExpandableRichTextEditor
+                          key={selectedLayerId}
                           value={getContentValue(selectedLayer)}
                           onChange={handleContentChange}
                           placeholder="Enter text..."
+                          sheetDescription="Element content"
                           fieldGroups={fieldGroups}
                           allFields={fields}
                           collections={collections}
-                          withFormatting={true}
-                          showFormattingToolbar={false}
                           disabled={showTextStyleControls}
                         />
                       )}
@@ -2732,59 +2311,105 @@ const RightSidebar = React.memo(function RightSidebar({
                     <>
                       <div className="grid grid-cols-3">
                         <Label variant="muted">Sort by</Label>
-                        <div className="col-span-2 *:w-full">
-                          <Select
-                            value={getCollectionVariable(selectedLayer)?.sort_by || 'none'}
-                            onValueChange={handleSortByChange}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select sorting" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectGroup>
-                                <SelectItem value="none">None</SelectItem>
-                                <SelectItem value="manual">Manual</SelectItem>
-                                <SelectItem value="random">Random</SelectItem>
-                              </SelectGroup>
-                              <SelectGroup>
-                                <SelectLabel>Fields</SelectLabel>
-                                {selectedCollectionFields.length > 0 &&
-                                  selectedCollectionFields.map((field) => (
-                                    <SelectItem key={field.id} value={field.id}>
-                                      <span className="flex items-center gap-2">
-                                        <Icon name={getFieldIcon(field.type)} className="size-3 text-muted-foreground shrink-0" />
-                                        {field.name}
-                                      </span>
-                                    </SelectItem>
-                                  ))}
-                              </SelectGroup>
-                            </SelectContent>
-                          </Select>
+                        <div className="col-span-2 *:w-full flex">
+                          {getCollectionVariable(selectedLayer)?.sort_by_inputLayerId ? (
+                              <div className="flex items-center gap-1">
+                                <Input value={getSortLinkedInputName(getCollectionVariable(selectedLayer)!.sort_by_inputLayerId!)} disabled />
+                                <div className="shrink-0">
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Button variant="secondary" onClick={() => handleUnlinkSortInput('sort_by_inputLayerId')}>
+                                        <Icon name="x" />
+                                      </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Unlink filter input</TooltipContent>
+                                  </Tooltip>
+                                </div>
+                              </div>
+                          ) : isElementPickerActive ? (
+                            <Button
+                              variant="secondary" onClick={stopElementPicker}
+                            />
+                          ) : (
+                            <Select
+                              value={getCollectionVariable(selectedLayer)?.sort_by || 'none'}
+                              onValueChange={handleSortBySelectValue}
+                            >
+                              <SelectTrigger ref={sortByTriggerRef}>
+                                <SelectValue placeholder="Select sorting" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectGroup>
+                                  <SelectItem value="none">None</SelectItem>
+                                  <SelectItem value="manual">Manual</SelectItem>
+                                  <SelectItem value="random">Random</SelectItem>
+                                  <SelectItem value={SORT_INPUT_VALUE_OPTION}>Input value</SelectItem>
+                                </SelectGroup>
+                                <SelectSeparator />
+                                <SelectGroup>
+                                  <SelectLabel>Fields</SelectLabel>
+                                  {selectedCollectionFields.length > 0 &&
+                                    selectedCollectionFields.map((field) => (
+                                      <SelectItem key={field.id} value={field.id}>
+                                        <span className="flex items-center gap-2">
+                                          <Icon name={getFieldIcon(field.type)} className="size-3 text-muted-foreground shrink-0" />
+                                          {field.name}
+                                        </span>
+                                      </SelectItem>
+                                    ))}
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                          )}
                         </div>
                       </div>
 
-                      {/* Sort Order - only show when a field is selected */}
-                      {getCollectionVariable(selectedLayer)?.sort_by &&
-                        getCollectionVariable(selectedLayer)?.sort_by !== 'none' &&
-                        getCollectionVariable(selectedLayer)?.sort_by !== 'manual' &&
-                        getCollectionVariable(selectedLayer)?.sort_by !== 'random' && (
+                      {/* Sort Order - show when field sort is selected or order is input-linked */}
+                      {(getCollectionVariable(selectedLayer)?.sort_order_inputLayerId ||
+                        getCollectionVariable(selectedLayer)?.sort_by_inputLayerId ||
+                        (getCollectionVariable(selectedLayer)?.sort_by &&
+                          getCollectionVariable(selectedLayer)?.sort_by !== 'none' &&
+                          getCollectionVariable(selectedLayer)?.sort_by !== 'manual' &&
+                          getCollectionVariable(selectedLayer)?.sort_by !== 'random')) && (
                           <div className="grid grid-cols-3">
                             <Label variant="muted">Sort order</Label>
-                            <div className="col-span-2 *:w-full">
-                              <Select
-                                value={getCollectionVariable(selectedLayer)?.sort_order || 'asc'}
-                                onValueChange={handleSortOrderChange}
-                              >
-                                <SelectTrigger>
-                                  <SelectValue />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectGroup>
-                                    <SelectItem value="asc">Ascending</SelectItem>
-                                    <SelectItem value="desc">Descending</SelectItem>
-                                  </SelectGroup>
-                                </SelectContent>
-                              </Select>
+                            <div className="col-span-2 *:w-full flex">
+                              {getCollectionVariable(selectedLayer)?.sort_order_inputLayerId ? (
+
+                                  <div className="flex items-center gap-1">
+                                    <Input value={getSortLinkedInputName(getCollectionVariable(selectedLayer)!.sort_order_inputLayerId!)} disabled />
+                                    <div className="shrink-0">
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <Button variant="secondary" onClick={() => handleUnlinkSortInput('sort_order_inputLayerId')}>
+                                            <Icon name="x" />
+                                          </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Unlink filter input</TooltipContent>
+                                      </Tooltip>
+                                    </div>
+                                  </div>
+
+                              ) : isElementPickerActive ? (
+                                <Button variant="secondary" onClick={stopElementPicker} />
+                              ) : (
+                                <Select
+                                  value={getCollectionVariable(selectedLayer)?.sort_order || 'asc'}
+                                  onValueChange={handleSortOrderSelectValue}
+                                >
+                                  <SelectTrigger ref={sortOrderTriggerRef}>
+                                    <SelectValue />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectGroup>
+                                      <SelectItem value="asc">Ascending</SelectItem>
+                                      <SelectItem value="desc">Descending</SelectItem>
+                                      <SelectSeparator />
+                                      <SelectItem value={SORT_INPUT_VALUE_OPTION}>Input value</SelectItem>
+                                    </SelectGroup>
+                                  </SelectContent>
+                                </Select>
+                              )}
                             </div>
                           </div>
                       )}
@@ -2921,6 +2546,11 @@ const RightSidebar = React.memo(function RightSidebar({
             />
 
             <FormSettings
+              layer={selectedLayer}
+              onLayerUpdate={handleLayerUpdate}
+            />
+
+            <FilterSettings
               layer={selectedLayer}
               onLayerUpdate={handleLayerUpdate}
             />

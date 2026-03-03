@@ -7,6 +7,7 @@ import { getAssetsByIds } from '@/lib/repositories/assetRepository';
 import { getComponentsByIds } from '@/lib/repositories/componentRepository';
 import { getDraftLayers, upsertDraftLayers } from '@/lib/repositories/pageLayersRepository';
 import type { Asset, Layer } from '@/types';
+import { collectComponentIds } from '@/lib/component-utils';
 
 const LAYOUTS_FILE_PATH = path.join(process.cwd(), 'lib', 'templates', 'layouts.ts');
 const LAYOUT_ASSETS_DIR = path.join(process.cwd(), 'public', 'ycode', 'layouts', 'assets');
@@ -33,27 +34,6 @@ function collectIconAssetIds(layer: Layer): string[] {
   }
 
   return assetIds;
-}
-
-/**
- * Collect all component IDs from layers with componentId
- */
-function collectComponentIds(layer: Layer): string[] {
-  const componentIds: string[] = [];
-
-  // Check if this layer is a component instance
-  if (layer.componentId) {
-    componentIds.push(layer.componentId);
-  }
-
-  // Recursively check children
-  if (layer.children) {
-    for (const child of layer.children) {
-      componentIds.push(...collectComponentIds(child));
-    }
-  }
-
-  return componentIds;
 }
 
 /**
@@ -327,7 +307,7 @@ export async function POST(request: NextRequest) {
     let template = JSON.parse(templateStr);
 
     // Make components portable: inline component layers with metadata for recreation
-    const componentIds = collectComponentIds(template);
+    const componentIds = Array.from(collectComponentIds([template]));
     if (componentIds.length > 0) {
       try {
         const componentsMap = await getComponentsByIds(componentIds);

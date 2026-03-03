@@ -1,9 +1,10 @@
 import React from 'react';
-import type { TextStyle, DynamicRichTextVariable, LinkSettings } from '@/types';
+import type { TextStyle, DynamicRichTextVariable, LinkSettings, Component } from '@/types';
 import { cn } from '@/lib/utils';
 import { formatFieldValue, resolveFieldFromSources } from '@/lib/cms-variables-utils';
 import { generateLinkHref, type LinkResolutionContext } from '@/lib/link-utils';
-import { extractInlineNodesFromRichText, isTiptapDoc, contentHasBlockElements, hasBlockElementsWithResolver } from '@/lib/tiptap-utils';
+import { extractInlineNodesFromRichText, contentHasBlockElements, hasBlockElementsWithResolver } from '@/lib/tiptap-utils';
+import { applyComponentOverrides, resolveComponents } from '@/lib/resolve-components';
 
 /**
  * Context for resolving rich text links - re-exports LinkResolutionContext for backwards compatibility
@@ -411,7 +412,10 @@ function renderNestedRichTextContent(
   isEditMode = false,
   linkContext?: RichTextLinkContext,
   timezone: string = 'UTC',
-  layerDataMap?: Record<string, Record<string, string>>
+  layerDataMap?: Record<string, Record<string, string>>,
+  components?: Component[],
+  renderComponentBlock?: RenderComponentBlockFn,
+  ancestorComponentIds?: Set<string>,
 ): React.ReactNode[] {
   // richTextValue should be a Tiptap doc structure: { type: 'doc', content: [...] }
   if (!richTextValue) {
@@ -442,7 +446,8 @@ function renderNestedRichTextContent(
       parsed.content.some((block: any) =>
         block.type === 'heading' ||
         block.type === 'bulletList' ||
-        block.type === 'orderedList'
+        block.type === 'orderedList' ||
+        block.type === 'richTextComponent'
       );
 
     if (hasBlockStructure) {
@@ -464,7 +469,7 @@ function renderNestedRichTextContent(
           if (!block.content || block.content.length === 0) {
             return React.createElement('span', props, '\u00A0');
           }
-          const content = renderInlineContent(block.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap);
+          const content = renderInlineContent(block.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds);
           return React.createElement('span', props, ...content);
         }
 
@@ -479,7 +484,7 @@ function renderNestedRichTextContent(
           if (!block.content || block.content.length === 0) {
             return React.createElement('span', props, '\u00A0');
           }
-          const content = renderInlineContent(block.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap);
+          const content = renderInlineContent(block.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds);
           return React.createElement('span', props, ...content);
         }
 
@@ -496,7 +501,7 @@ function renderNestedRichTextContent(
               DEFAULT_TEXT_STYLES.listItem?.classes ?? '';
             const itemContent = item.content?.flatMap((itemBlock: any) => {
               if (itemBlock.type === 'paragraph' && itemBlock.content) {
-                return renderInlineContent(itemBlock.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap);
+                return renderInlineContent(itemBlock.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds);
               }
               return [];
             }) || [];
@@ -509,9 +514,14 @@ function renderNestedRichTextContent(
           return React.createElement(tag, listProps, ...items);
         }
 
+        // Handle embedded component blocks
+        if (block.type === 'richTextComponent' && block.attrs?.componentId) {
+          return renderRichTextComponentBlock(block, blockKey, components, renderComponentBlock, ancestorComponentIds);
+        }
+
         // Fallback: render inline content
         if (block.content) {
-          const content = renderInlineContent(block.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap);
+          const content = renderInlineContent(block.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds);
           return React.createElement('span', { key: blockKey }, ...content);
         }
 
@@ -535,7 +545,10 @@ function renderNestedRichTextContent(
       isEditMode,
       linkContext,
       timezone,
-      layerDataMap
+      layerDataMap,
+      components,
+      renderComponentBlock,
+      ancestorComponentIds
     );
 
     // Add unique keys to each rendered node
@@ -562,7 +575,10 @@ function renderInlineContent(
   isEditMode = false,
   linkContext?: RichTextLinkContext,
   timezone: string = 'UTC',
-  layerDataMap?: Record<string, Record<string, string>>
+  layerDataMap?: Record<string, Record<string, string>>,
+  components?: Component[],
+  renderComponentBlock?: RenderComponentBlockFn,
+  ancestorComponentIds?: Set<string>,
 ): React.ReactNode[] {
   return content.flatMap((node, idx) => {
     const key = `node-${idx}`;
@@ -596,7 +612,10 @@ function renderInlineContent(
             isEditMode,
             linkContext,
             timezone,
-            layerDataMap
+            layerDataMap,
+            components,
+            renderComponentBlock,
+            ancestorComponentIds,
           );
         }
       }
@@ -609,6 +628,12 @@ function renderInlineContent(
         marks: node.marks || [],
       };
       return [renderTextNode(textNode, key, textStyles, isEditMode, collectionItemData, pageCollectionItemData, undefined, layerDataMap)];
+    }
+
+    // Handle embedded component nodes preserved during flattening (from CMS rich_text fields)
+    if (node.type === 'richTextComponent' && node.attrs?.componentId) {
+      const rendered = renderRichTextComponentBlock(node, key, components, renderComponentBlock, ancestorComponentIds);
+      return rendered ? [rendered] : [];
     }
 
     // Handle list nodes that were preserved during flattening
@@ -625,7 +650,7 @@ function renderInlineContent(
           DEFAULT_TEXT_STYLES.listItem?.classes ?? '';
         const itemContent = item.content?.flatMap((itemBlock: any) => {
           if (itemBlock.type === 'paragraph' && itemBlock.content) {
-            return renderInlineContent(itemBlock.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap);
+            return renderInlineContent(itemBlock.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds);
           }
           return [];
         }) || [];
@@ -643,6 +668,71 @@ function renderInlineContent(
 }
 
 /**
+ * Callback for rendering an embedded component block inside rich-text.
+ * Receives the resolved component, its layers with overrides applied, and a unique key.
+ * `ancestorComponentIds` tracks the component chain to prevent infinite loops.
+ */
+export type RenderComponentBlockFn = (
+  component: Component,
+  resolvedLayers: import('@/types').Layer[],
+  overrides: import('@/types').Layer['componentOverrides'],
+  key: string,
+  ancestorComponentIds?: Set<string>,
+) => React.ReactNode;
+
+/**
+ * Render an embedded component node to React.
+ * Resolves the component, applies overrides, and delegates to the callback.
+ * Tracks ancestor component IDs to prevent infinite loops.
+ */
+function renderRichTextComponentBlock(
+  block: any,
+  key: string,
+  components?: Component[],
+  renderComponentBlock?: RenderComponentBlockFn,
+  ancestorComponentIds?: Set<string>,
+): React.ReactNode {
+  const componentId = block.attrs.componentId as string;
+  const overrides = block.attrs.componentOverrides ?? undefined;
+
+  // Prevent circular rendering
+  if (ancestorComponentIds?.has(componentId)) {
+    return null;
+  }
+
+  const component = components?.find(c => c.id === componentId);
+  if (!component || !component.layers?.length) {
+    return React.createElement('span', { key, className: 'text-xs text-muted-foreground' }, '[missing component]');
+  }
+
+  if (!renderComponentBlock) {
+    return React.createElement('span', { key, 'data-component-id': componentId }, `[${component.name}]`);
+  }
+
+  // Build updated ancestor set including the current component
+  const updatedAncestors = new Set(ancestorComponentIds);
+  updatedAncestors.add(componentId);
+
+  // Use pre-resolved layers (from server-side resolveRichTextCollections) when available
+  if (block.attrs._resolvedLayers) {
+    return renderComponentBlock(component, block.attrs._resolvedLayers, overrides, key, updatedAncestors);
+  }
+
+  const withOverrides = applyComponentOverrides(
+    component.layers,
+    overrides,
+    component.variables,
+  );
+
+  // Resolve nested component instances so they render in non-edit mode
+  const resolvedLayers = components?.length
+    ? resolveComponents(withOverrides, components, component.variables, overrides)
+    : withOverrides;
+
+  return renderComponentBlock(component, resolvedLayers, overrides, key, updatedAncestors);
+}
+
+/**
  * Render a paragraph or list item block
  */
 function renderBlock(
@@ -655,19 +745,30 @@ function renderBlock(
   isEditMode = false,
   linkContext?: RichTextLinkContext,
   timezone: string = 'UTC',
-  layerDataMap?: Record<string, Record<string, string>>
+  layerDataMap?: Record<string, Record<string, string>>,
+  components?: Component[],
+  renderComponentBlock?: RenderComponentBlockFn,
+  ancestorComponentIds?: Set<string>,
 ): React.ReactNode {
   const key = `block-${idx}`;
 
   if (block.type === 'paragraph') {
     const paragraphClass = getTextStyleClasses(textStyles, 'paragraph');
-    const tag = useSpanForParagraphs ? 'span' : 'p';
 
     // Empty paragraphs use non-breaking space to preserve the empty line
     if (!block.content || block.content.length === 0) {
-      return React.createElement(tag, { key, className: paragraphClass }, '\u00A0');
+      const emptyTag = useSpanForParagraphs ? 'span' : 'p';
+      return React.createElement(emptyTag, { key, className: paragraphClass }, '\u00A0');
     }
-    return React.createElement(tag, { key, className: paragraphClass }, ...renderInlineContent(block.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap));
+
+    // Use div when paragraph contains block-level content (rich_text variables or embedded components)
+    const hasBlockContent = block.content?.some((n: any) =>
+      (n.type === 'dynamicVariable' && n.attrs?.variable?.data?.field_type === 'rich_text') ||
+      n.type === 'richTextComponent'
+    );
+    const tag = hasBlockContent ? 'div' : useSpanForParagraphs ? 'span' : 'p';
+
+    return React.createElement(tag, { key, className: paragraphClass }, ...renderInlineContent(block.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds));
   }
 
   if (block.type === 'heading') {
@@ -686,7 +787,7 @@ function renderBlock(
     if (isEditMode) {
       headingProps['data-style'] = styleKey;
     }
-    return React.createElement(tag, headingProps, ...renderInlineContent(block.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap));
+    return React.createElement(tag, headingProps, ...renderInlineContent(block.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds));
   }
 
   if (block.type === 'bulletList') {
@@ -701,7 +802,7 @@ function renderBlock(
       'ul',
       ulProps,
       block.content?.map((item: any, itemIdx: number) =>
-        renderListItem(item, `${key}-${itemIdx}`, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap)
+        renderListItem(item, `${key}-${itemIdx}`, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds)
       )
     );
   }
@@ -718,9 +819,14 @@ function renderBlock(
       'ol',
       olProps,
       block.content?.map((item: any, itemIdx: number) =>
-        renderListItem(item, `${key}-${itemIdx}`, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap)
+        renderListItem(item, `${key}-${itemIdx}`, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds)
       )
     );
+  }
+
+  // Handle embedded component blocks
+  if (block.type === 'richTextComponent' && block.attrs?.componentId) {
+    return renderRichTextComponentBlock(block, key, components, renderComponentBlock, ancestorComponentIds);
   }
 
   return null;
@@ -738,16 +844,18 @@ function renderListItem(
   isEditMode = false,
   linkContext?: RichTextLinkContext,
   timezone: string = 'UTC',
-  layerDataMap?: Record<string, Record<string, string>>
+  layerDataMap?: Record<string, Record<string, string>>,
+  components?: Component[],
+  renderComponentBlock?: RenderComponentBlockFn,
+  ancestorComponentIds?: Set<string>,
 ): React.ReactNode {
   if (item.type !== 'listItem') return null;
 
   const children = item.content?.flatMap((block: any, idx: number) => {
     if (block.type === 'paragraph') {
-      // For list items, render paragraph content without <p> wrapper
-      return renderInlineContent(block.content || [], collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap);
+      return renderInlineContent(block.content || [], collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds);
     }
-    return renderBlock(block, idx, collectionItemData, pageCollectionItemData, textStyles, false, isEditMode, linkContext, timezone, layerDataMap);
+    return renderBlock(block, idx, collectionItemData, pageCollectionItemData, textStyles, false, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds);
   });
 
   const liProps: Record<string, any> = {
@@ -806,6 +914,8 @@ export function hasBlockElementsWithInlineVariables(
  * @param linkContext - Context for resolving page/asset/field links
  * @param timezone - Timezone for formatting date values
  * @param layerDataMap - Map of layer ID → item data for layer-specific resolution
+ * @param components - Available components for resolving embedded component nodes
+ * @param renderComponentBlock - Callback to render a resolved component block
  */
 export function renderRichText(
   variable: DynamicRichTextVariable,
@@ -816,7 +926,10 @@ export function renderRichText(
   isEditMode = false,
   linkContext?: RichTextLinkContext,
   timezone: string = 'UTC',
-  layerDataMap?: Record<string, Record<string, string>>
+  layerDataMap?: Record<string, Record<string, string>>,
+  components?: Component[],
+  renderComponentBlock?: RenderComponentBlockFn,
+  ancestorComponentIds?: Set<string>,
 ): React.ReactNode {
   const content = variable.data.content;
 
@@ -836,11 +949,11 @@ export function renderRichText(
     if (!paragraph.content || paragraph.content.length === 0) {
       return null;
     }
-    return renderInlineContent(paragraph.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap);
+    return renderInlineContent(paragraph.content, collectionItemData, pageCollectionItemData, textStyles, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds);
   }
 
   return doc.content.map((block: any, idx: number) =>
-    renderBlock(block, idx, collectionItemData, pageCollectionItemData, textStyles, useSpanForParagraphs, isEditMode, linkContext, timezone, layerDataMap)
+    renderBlock(block, idx, collectionItemData, pageCollectionItemData, textStyles, useSpanForParagraphs, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds)
   );
 }
 

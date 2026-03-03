@@ -11,10 +11,12 @@
 import React, { useEffect, useState, useImperativeHandle, forwardRef, useCallback, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useEditor, EditorContent } from '@tiptap/react';
-import { Node, Mark, mergeAttributes } from '@tiptap/core';
+import { Mark, mergeAttributes } from '@tiptap/core';
 import Document from '@tiptap/extension-document';
 import Text from '@tiptap/extension-text';
 import Paragraph from '@tiptap/extension-paragraph';
+import History from '@tiptap/extension-history';
+import { EditorState } from '@tiptap/pm/state';
 import Placeholder from '@tiptap/extension-placeholder';
 import Bold from '@tiptap/extension-bold';
 import Italic from '@tiptap/extension-italic';
@@ -54,8 +56,12 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { CollectionFieldSelector, type FieldSourceType } from './CollectionFieldSelector';
 import { flattenFieldGroups, hasFieldsMatching, DISPLAYABLE_FIELD_TYPES, type FieldGroup } from '@/lib/collection-field-utils';
+import { DynamicVariable, getDynamicVariableLabel } from '@/lib/tiptap-extensions/dynamic-variable';
+import { RichTextComponent } from '@/lib/tiptap-extensions/rich-text-component';
 import { RichTextLink, getLinkSettingsFromMark } from '@/lib/tiptap-extensions/rich-text-link';
 import RichTextLinkPopover from './RichTextLinkPopover';
+import RichTextComponentPicker from './RichTextComponentPicker';
+import RichTextComponentBlock from './RichTextComponentBlock';
 import type { Layer, LinkSettings, LinkType } from '@/types';
 import { DEFAULT_TEXT_STYLES } from '@/lib/text-format-utils';
 
@@ -89,6 +95,10 @@ interface RichTextEditorProps {
   size?: 'xs' | 'sm';
   /** Link types to exclude from the link settings dropdown */
   excludedLinkTypes?: LinkType[];
+  /** Stretch editor to fill parent height (scrolls content instead of growing) */
+  fullHeight?: boolean;
+  /** Callback to open the full editor sheet (shown as expand button in toolbar) */
+  onExpandClick?: () => void;
 }
 
 export interface RichTextEditorHandle {
@@ -98,74 +108,12 @@ export interface RichTextEditorHandle {
 export type { FieldVariable } from '@/types';
 
 /**
- * Custom Tiptap node for dynamic variable badges
- * Stores data in data-variable attribute as JSON-encoded string
+ * DynamicVariable with React node view for the sidebar rich-text editor.
+ * Extends the shared extension with a Badge-based node view.
  */
-const DynamicVariable = Node.create({
-  name: 'dynamicVariable',
-  group: 'inline',
-  inline: true,
-  atom: true,
-
-  addAttributes() {
-    return {
-      variable: {
-        default: null,
-        parseHTML: (element) => {
-          const variableAttr = element.getAttribute('data-variable');
-          if (variableAttr) {
-            try {
-              return JSON.parse(variableAttr);
-            } catch {
-              return null;
-            }
-          }
-          return null;
-        },
-        renderHTML: (attributes) => {
-          if (!attributes) return {};
-
-          return {
-            'data-variable': JSON.stringify(attributes),
-          };
-        },
-      },
-      label: {
-        default: null,
-        parseHTML: (element) => {
-          // Try to get from text content or data attribute
-          return element.textContent || null;
-        },
-      },
-    };
-  },
-
-  parseHTML() {
-    return [
-      {
-        tag: 'span[data-variable]',
-      },
-    ];
-  },
-
-  renderHTML({ node, HTMLAttributes }) {
-    const label = node.attrs.label ||
-      (node.attrs.variable?.data?.field_id) ||
-      (node.attrs.variable?.type || 'variable');
-
-    return [
-      'span',
-      mergeAttributes(HTMLAttributes, {
-        class: 'inline-flex items-center justify-center gap-1 rounded-sm border px-1.5 py-0 text-[10px] font-medium whitespace-nowrap shrink-0 border-transparent bg-secondary text-secondary-foreground/70 mx-0.5',
-        'data-variable': node.attrs.variable ? JSON.stringify(node.attrs.variable) : undefined,
-      }),
-      ['span', {}, label],
-    ];
-  },
-
+const DynamicVariableWithNodeView = DynamicVariable.extend({
   addNodeView() {
     return ({ node, getPos, editor }) => {
-      // Create container for React component
       const container = document.createElement('span');
       container.className = 'inline-block';
       container.contentEditable = 'false';
@@ -175,12 +123,8 @@ const DynamicVariable = Node.create({
         container.setAttribute('data-variable', JSON.stringify(variable));
       }
 
-      // Extract label from variable data
-      const label = node.attrs.label ||
-        (variable?.data?.field_id) ||
-        (variable?.type || 'variable');
+      const label = getDynamicVariableLabel(node);
 
-      // Handle delete
       const handleDelete = () => {
         const pos = getPos();
         if (typeof pos === 'number') {
@@ -188,16 +132,13 @@ const DynamicVariable = Node.create({
         }
       };
 
-      // Render React Badge component asynchronously to avoid triggering updates during render phase
-      // The renderHTML fallback matches Badge styling exactly, so there's no visual difference
       const root = createRoot(container);
 
       const renderBadge = () => {
-        const isEditable = editor.isEditable;
         root.render(
           <Badge variant="secondary">
             <span>{label}</span>
-            {isEditable && (
+            {editor.isEditable && (
               <Button
                 onClick={handleDelete}
                 className="size-4! p-0! -mr-1"
@@ -212,20 +153,93 @@ const DynamicVariable = Node.create({
 
       queueMicrotask(renderBadge);
 
-      // Re-render when editor editable state changes
-      const updateListener = () => {
-        renderBadge();
-      };
+      const updateListener = () => renderBadge();
       editor.on('update', updateListener);
 
       return {
         dom: container,
         destroy: () => {
           editor.off('update', updateListener);
-          // Defer unmount to avoid synchronous unmount during render
-          setTimeout(() => {
-            root.unmount();
-          }, 0);
+          setTimeout(() => root.unmount(), 0);
+        },
+      };
+    };
+  },
+});
+
+/**
+ * RichTextComponent with React node view for embedding components.
+ * Renders a collapsible block with override controls.
+ */
+const RichTextComponentWithNodeView = RichTextComponent.extend({
+  addNodeView() {
+    return ({ node: initialNode, getPos, editor }) => {
+      const container = document.createElement('div');
+      container.className = 'my-2';
+      container.contentEditable = 'false';
+
+      // Mutable ref so renderBlock always reads the latest node
+      let currentNode = initialNode;
+
+      const root = createRoot(container);
+
+      const renderBlock = () => {
+        const componentId = currentNode.attrs.componentId;
+        const componentOverrides = currentNode.attrs.componentOverrides;
+        const ctx = (editor.storage as Record<string, any>).richTextComponent?.editorContext ?? {};
+
+        const handleOverridesChange = (overrides: any) => {
+          const pos = getPos();
+          if (typeof pos === 'number') {
+            const tr = editor.state.tr.setNodeMarkup(pos, undefined, {
+              ...currentNode.attrs,
+              componentOverrides: overrides,
+            });
+            editor.view.dispatch(tr);
+          }
+        };
+
+        const handleDelete = () => {
+          const pos = getPos();
+          if (typeof pos === 'number') {
+            editor.chain().focus().deleteRange({ from: pos, to: pos + currentNode.nodeSize }).run();
+          }
+        };
+
+        root.render(
+          <RichTextComponentBlock
+            componentId={componentId}
+            componentOverrides={componentOverrides}
+            onOverridesChange={handleOverridesChange}
+            onDelete={handleDelete}
+            isEditable={editor.isEditable}
+            fieldGroups={ctx.fieldGroups}
+            allFields={ctx.allFields}
+            collections={ctx.collections}
+            isInsideCollectionLayer={ctx.isInsideCollectionLayer}
+          />,
+        );
+      };
+
+      queueMicrotask(renderBlock);
+
+      return {
+        dom: container,
+        stopEvent: () => true,
+        selectNode: () => {
+          container.classList.add('ring-1', 'ring-ring/30', 'rounded-md');
+        },
+        deselectNode: () => {
+          container.classList.remove('ring-1', 'ring-ring/30', 'rounded-md');
+        },
+        update: (updatedNode) => {
+          if (updatedNode.type.name !== 'richTextComponent') return false;
+          currentNode = updatedNode;
+          renderBlock();
+          return true;
+        },
+        destroy: () => {
+          setTimeout(() => root.unmount(), 0);
         },
       };
     };
@@ -301,10 +315,13 @@ const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(({
   variant = 'compact',
   size = 'xs',
   excludedLinkTypes = [],
+  fullHeight = false,
+  onExpandClick,
 }, ref) => {
   const isFullVariant = variant === 'full';
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [linkPopoverOpen, setLinkPopoverOpen] = useState(false);
+  const [componentPickerOpen, setComponentPickerOpen] = useState(false);
   // Track if update is coming from editor to prevent infinite loop
   const isInternalUpdateRef = useRef(false);
 
@@ -322,8 +339,10 @@ const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(({
       Document,
       Paragraph,
       Text,
-      DynamicVariable,
+      History,
+      DynamicVariableWithNodeView,
       DynamicStyle,
+      RichTextComponentWithNodeView,
       Placeholder.configure({
         placeholder,
       }),
@@ -411,7 +430,8 @@ const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(({
           !isFullVariant && size === 'sm' && 'min-h-[2.5rem] text-sm leading-6 px-3 py-1.5',
           // Full variant - larger text, more padding
           // Element styles (h1-h6, p, ul, ol, li, blockquote, code) defined in globals.css
-          isFullVariant && 'rich-text-editor-full min-h-[200px] leading-relaxed px-3 py-2.5',
+          isFullVariant && !fullHeight && 'rich-text-editor-full min-h-[200px] leading-relaxed px-3 py-2.5',
+          isFullVariant && fullHeight && 'rich-text-editor-full leading-relaxed px-3 py-2.5 focus-visible:border-ring/30 focus-visible:ring-ring/15',
           className
         ),
       },
@@ -448,11 +468,15 @@ const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(({
       }
     },
     onCreate: ({ editor }) => {
-      // Set initial content
-      const content = withFormatting && typeof value === 'object'
-        ? value
-        : parseValueToContent(typeof value === 'string' ? value : '', fields, undefined, allFields);
-      editor.commands.setContent(content);
+      // Reset editor state to clear history so initial content isn't undoable
+      const { state } = editor;
+      editor.view.updateState(EditorState.create({
+        doc: state.doc,
+        plugins: state.plugins,
+      }));
+      // updateState may trigger onUpdate which sets isInternalUpdateRef;
+      // clear it so the next external value-sync effect is not blocked
+      isInternalUpdateRef.current = false;
     },
     onFocus: () => {},
     onBlur: () => {
@@ -470,6 +494,16 @@ const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(({
     if (!editor) return;
     editor.setEditable(!disabled);
   }, [editor, disabled]);
+
+  // Sync CMS context into editor storage so node views can access it
+  useEffect(() => {
+    if (!editor) return;
+    const storage = editor.storage as Record<string, any>;
+    storage.richTextComponent = {
+      ...storage.richTextComponent,
+      editorContext: { fieldGroups, allFields, collections, isInsideCollectionLayer },
+    };
+  }, [editor, fieldGroups, allFields, collections, isInsideCollectionLayer]);
 
   // Update editor content when value or fields change externally
   useEffect(() => {
@@ -707,7 +741,7 @@ const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(({
   };
 
   return (
-    <div className={cn('flex-1 rich-text-editor relative', isFullVariant && 'flex flex-col gap-2')}>
+    <div className={cn('flex-1 rich-text-editor relative', isFullVariant && 'flex flex-col gap-2', fullHeight && 'min-h-0')}>
       {/* Formatting toolbar - Full variant (CMS style like original TiptapEditor) */}
       {withFormatting && showFormattingToolbar && isFullVariant && (
         <div className="flex items-center gap-2">
@@ -918,6 +952,75 @@ const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(({
               </DropdownMenu>
             </ToggleGroup>
           )}
+
+          {/* Insert Component Button */}
+          <ToggleGroup
+            type="single"
+            value=""
+            size="xs"
+            variant="secondary"
+            spacing={1}
+          >
+            <ToggleGroupItem
+              value="component"
+              asChild
+            >
+              <button
+                type="button"
+                title="Insert Component"
+                disabled={disabled}
+                className="w-auto min-w-0 shrink-0"
+                onClick={() => setComponentPickerOpen(true)}
+              >
+                <Icon name="component" className="size-3" />
+              </button>
+            </ToggleGroupItem>
+          </ToggleGroup>
+
+          <div className="flex-1" />
+
+          {/* Undo / Redo */}
+          <ToggleGroup
+            type="single"
+            value=""
+            size="xs"
+            variant="secondary"
+            spacing={1}
+          >
+            <ToggleGroupItem
+              value="undo"
+              onClick={() => editor.chain().focus().undo().run()}
+              disabled={disabled || !editor.can().undo()}
+              title="Undo (⌘Z)"
+            >
+              <Icon name="undo" className="size-3" />
+            </ToggleGroupItem>
+            <ToggleGroupItem
+              value="redo"
+              onClick={() => editor.chain().focus().redo().run()}
+              disabled={disabled || !editor.can().redo()}
+              title="Redo (⌘⇧Z)"
+            >
+              <Icon name="redo" className="size-3" />
+            </ToggleGroupItem>
+          </ToggleGroup>
+
+          {onExpandClick && !fullHeight && (
+            <ToggleGroup
+              type="single"
+              value=""
+              size="xs"
+              variant="secondary"
+            >
+              <ToggleGroupItem
+                value="expand"
+                onClick={onExpandClick}
+                title="Open full editor"
+              >
+                <Icon name="expand" className="size-3" />
+              </ToggleGroupItem>
+            </ToggleGroup>
+          )}
         </div>
       )}
 
@@ -1121,10 +1224,56 @@ const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(({
               />
             </>
           )}
+
+          {/* Insert Component Button */}
+          <div className="w-px h-4 bg-border mx-0.5" />
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="size-6!"
+            title="Insert Component"
+            disabled={disabled}
+            onClick={() => setComponentPickerOpen(true)}
+          >
+            <Icon name="component" className="size-3" />
+          </Button>
+
+          <div className="flex-1" />
+
+          {/* Undo / Redo */}
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="size-6!"
+            disabled={disabled || !editor.can().undo()}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              if (!disabled) editor.chain().focus().undo().run();
+            }}
+            title="Undo (⌘Z)"
+          >
+            <Icon name="undo" className="size-3" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="size-6!"
+            disabled={disabled || !editor.can().redo()}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              if (!disabled) editor.chain().focus().redo().run();
+            }}
+            title="Redo (⌘⇧Z)"
+          >
+            <Icon name="redo" className="size-3" />
+          </Button>
         </div>
       )}
 
-      <div className="relative">
+      <div className={cn('relative', fullHeight && 'flex-1 min-h-0 flex flex-col [&>div]:flex-1 [&>div]:min-h-0 [&>div]:flex [&>div]:flex-col [&_.tiptap]:flex-1 [&_.tiptap]:min-h-0 [&_.tiptap]:overflow-y-auto')}>
         <EditorContent editor={editor} />
       </div>
 
@@ -1160,6 +1309,15 @@ const RichTextEditor = forwardRef<RichTextEditorHandle, RichTextEditorProps>(({
           </DropdownMenu>
         </div>
       )}
+
+      <RichTextComponentPicker
+        open={componentPickerOpen}
+        onOpenChange={setComponentPickerOpen}
+        onSelect={(componentId) => {
+          editor?.chain().focus().insertComponent({ componentId }).run();
+        }}
+        disabled={disabled}
+      />
     </div>
   );
 });

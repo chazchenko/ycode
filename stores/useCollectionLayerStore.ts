@@ -15,12 +15,14 @@ interface CollectionLayerState {
   layerData: Record<string, CollectionItemWithValues[]>; // keyed by layerId
   loading: Record<string, boolean>; // loading state per layer
   error: Record<string, string | null>; // error state per layer
-  layerConfig: Record<string, { collectionId: string; sortBy?: string; sortOrder?: 'asc' | 'desc'; limit?: number; offset?: number }>; // Track config per layer
+  layerConfig: Record<string, { collectionId: string; sortBy?: string; sortOrder?: 'asc' | 'desc'; limit?: number; offset?: number; filters?: Array<{ fieldId: string; operator: string; value: string }> }>; // Track config per layer
   referencedItems: Record<string, CollectionItemWithValues[]>; // Items for referenced collections, keyed by collectionId
   referencedLoading: Record<string, boolean>; // Loading state for referenced collections
   // Pagination state
   paginationMeta: Record<string, CollectionPaginationMeta>; // Pagination meta per layer
   paginationLoading: Record<string, boolean>; // Loading state for pagination per layer
+  // Bumped after CMS updates to signal the canvas should re-fetch
+  invalidationKey: number;
 }
 
 interface CollectionLayerActions {
@@ -30,12 +32,14 @@ interface CollectionLayerActions {
     sortBy?: string,
     sortOrder?: 'asc' | 'desc',
     limit?: number,
-    offset?: number
+    offset?: number,
+    filters?: Array<{ fieldId: string; operator: string; value: string }>
   ) => Promise<void>;
   fetchReferencedCollectionItems: (collectionId: string) => Promise<void>;
   clearLayerData: (layerId: string) => void;
   clearAllLayerData: () => void;
   updateItemInLayerData: (itemId: string, values: Record<string, string>) => void;
+  invalidateLayerData: (collectionId: string) => void;
   refetchLayersForCollection: (collectionId: string) => Promise<void>;
   // Pagination actions
   fetchPage: (layerId: string, page: number) => Promise<{ items: CollectionItemWithValues[]; meta: CollectionPaginationMeta } | null>;
@@ -54,6 +58,7 @@ export const useCollectionLayerStore = create<CollectionLayerStore>((set, get) =
   referencedLoading: {},
   paginationMeta: {},
   paginationLoading: {},
+  invalidationKey: 0,
 
   // Fetch items for a referenced collection (used for reference field resolution)
   fetchReferencedCollectionItems: async (collectionId: string) => {
@@ -92,7 +97,8 @@ export const useCollectionLayerStore = create<CollectionLayerStore>((set, get) =
     sortBy?: string,
     sortOrder: 'asc' | 'desc' = 'asc',
     limit?: number,
-    offset?: number
+    offset?: number,
+    filters?: Array<{ fieldId: string; operator: string; value: string }>
   ) => {
     const { layerData, loading, layerConfig } = get();
 
@@ -108,12 +114,14 @@ export const useCollectionLayerStore = create<CollectionLayerStore>((set, get) =
 
     // Check if we already have data with the same config
     const existingConfig = layerConfig[layerId];
+    const filtersMatch = JSON.stringify(existingConfig?.filters) === JSON.stringify(filters);
     const configMatches = existingConfig &&
       existingConfig.collectionId === collectionId &&
       existingConfig.sortBy === sortBy &&
       existingConfig.sortOrder === sortOrder &&
       existingConfig.limit === limit &&
-      existingConfig.offset === offset;
+      existingConfig.offset === offset &&
+      filtersMatch;
 
     // Skip if we have data and config matches
     if (layerData[layerId]?.length > 0 && configMatches) {
@@ -133,6 +141,7 @@ export const useCollectionLayerStore = create<CollectionLayerStore>((set, get) =
         sortOrder,
         limit,
         offset,
+        filters,
       });
 
       if (response.error) {
@@ -147,7 +156,7 @@ export const useCollectionLayerStore = create<CollectionLayerStore>((set, get) =
         loading: { ...state.loading, [layerId]: false },
         layerConfig: {
           ...state.layerConfig,
-          [layerId]: { collectionId, sortBy, sortOrder, limit, offset }
+          [layerId]: { collectionId, sortBy, sortOrder, limit, offset, filters }
         },
       }));
     } catch (error) {
@@ -205,6 +214,25 @@ export const useCollectionLayerStore = create<CollectionLayerStore>((set, get) =
     });
   },
 
+  // Invalidate cached layer data for a specific collection so the next fetchLayerData call bypasses the config-match check.
+  // Also clears referenced items cache since reference fields may point to this collection.
+  invalidateLayerData: (collectionId: string) => {
+    const { layerConfig, referencedItems } = get();
+    const updatedConfig = { ...layerConfig };
+    for (const [layerId, config] of Object.entries(updatedConfig)) {
+      if (config.collectionId === collectionId) {
+        delete updatedConfig[layerId];
+      }
+    }
+    const updatedReferenced = { ...referencedItems };
+    delete updatedReferenced[collectionId];
+    set({
+      layerConfig: updatedConfig,
+      referencedItems: updatedReferenced,
+      invalidationKey: get().invalidationKey + 1,
+    });
+  },
+
   // Refetch all layers that use a specific collection
   refetchLayersForCollection: async (collectionId) => {
     const { layerConfig } = get();
@@ -224,6 +252,7 @@ export const useCollectionLayerStore = create<CollectionLayerStore>((set, get) =
             sortOrder: config.sortOrder,
             limit: config.limit,
             offset: config.offset,
+            filters: config.filters,
           });
 
           if (!response.error && response.data?.items) {
