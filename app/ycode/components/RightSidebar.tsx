@@ -47,6 +47,7 @@ import FormSettings from './FormSettings';
 import FilterSettings from './FilterSettings';
 import AlertSettings from './AlertSettings';
 import HTMLEmbedSettings from './HTMLEmbedSettings';
+import SliderSettings from './SliderSettings';
 import InputSettings from './InputSettings';
 import SelectOptionsSettings from './SelectOptionsSettings';
 import LabelSettings from './LabelSettings';
@@ -480,10 +481,9 @@ const RightSidebar = React.memo(function RightSidebar({
         return true;
 
       case 'typography':
-        // Typography controls: show in text edit mode or for text elements, buttons, icons, form inputs, and body
-        // Body typography cascades to all children (global font family, color, etc.)
+        // Typography controls: show in text edit mode or for text elements, buttons, icons, form inputs, body, and fraction
         if (showTextStyleControls) return true;
-        return isTextLayer(layer) || isButtonLayer(layer) || isIconLayer(layer) || isFormInputLayer(layer) || layer.id === 'body';
+        return isTextLayer(layer) || isButtonLayer(layer) || isIconLayer(layer) || isFormInputLayer(layer) || layer.id === 'body' || layer.name === 'slideFraction';
 
       case 'backgrounds':
         // Background controls: show for all elements (text layers need it for clip-text effects)
@@ -2558,6 +2558,12 @@ const RightSidebar = React.memo(function RightSidebar({
             <AlertSettings
               layer={selectedLayer}
               onLayerUpdate={handleLayerUpdate}
+            />
+
+            <SliderSettings
+              layer={selectedLayer}
+              onLayerUpdate={handleLayerUpdate}
+              allLayers={allLayers}
             />
 
             <LabelSettings

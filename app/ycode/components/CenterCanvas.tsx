@@ -1333,7 +1333,13 @@ const CenterCanvas = React.memo(function CenterCanvas({
     };
 
     const result = findParentId(layersToSearch, selectedLayerId);
-    return result === undefined ? null : result;
+    if (result === undefined) return null;
+
+    // Hide parent outline for slide layers (parent is just the slides wrapper)
+    const selectedLayer = findLayerById(layersToSearch, selectedLayerId);
+    if (selectedLayer?.name === 'slide') return null;
+
+    return result;
   }, [selectedLayerId, currentPageId, editingComponentId, componentDrafts, draftsByPageId]);
 
   // Get selected layer name for drag preview

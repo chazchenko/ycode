@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useMemo, Suspense } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, Suspense } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import LayerLockIndicator from '@/components/collaboration/LayerLockIndicator';
@@ -11,7 +11,9 @@ import { useLocalisationStore } from '@/stores/useLocalisationStore';
 import type { Layer, Locale, ComponentVariable, FormSettings, LinkSettings, Breakpoint, CollectionItemWithValues, Component } from '@/types';
 import type { UseLiveLayerUpdatesReturn } from '@/hooks/use-live-layer-updates';
 import type { UseLiveComponentUpdatesReturn } from '@/hooks/use-live-component-updates';
-import { getLayerHtmlTag, getClassesString, getText, resolveFieldValue, isTextEditable, getCollectionVariable, evaluateVisibility } from '@/lib/layer-utils';
+import { getLayerHtmlTag, getClassesString, getText, resolveFieldValue, isTextEditable, getCollectionVariable, evaluateVisibility, findAncestorByName, filterDisabledSliderLayers } from '@/lib/layer-utils';
+import { SWIPER_CLASS_MAP, SWIPER_DATA_ATTR_MAP } from '@/lib/templates/utilities';
+import { useCanvasSlider } from '@/hooks/use-canvas-slider';
 import { resolveFieldFromSources } from '@/lib/cms-variables-utils';
 import { getDynamicTextContent, getImageUrlFromVariable, getVideoUrlFromVariable, getIframeUrlFromVariable, isFieldVariable, isAssetVariable, isStaticTextVariable, isDynamicTextVariable, getAssetId, getStaticTextContent, createAssetVariable, createDynamicTextVariable, resolveDesignStyles } from '@/lib/variable-utils';
 import { getTranslatedAssetId, getTranslatedText } from '@/lib/localisation-utils';
@@ -249,7 +251,7 @@ const LayerRenderer: React.FC<LayerRendererProps> = ({
 
     return (
       <LayerItem
-        key={layer.id}
+        key={(layer as Layer & { _bulletKey?: string })._bulletKey || layer.id}
         layer={layer}
         isEditMode={isEditMode}
         isPublished={isPublished}
@@ -1178,7 +1180,33 @@ const LayerItem: React.FC<{
 
   // For component instances in edit mode, use the component's layers as children
   // For published pages, children are already resolved server-side
-  const children = (isEditMode && component && component.layers) ? component.layers : layer.children;
+  const baseChildren = (isEditMode && component && component.layers) ? component.layers : layer.children;
+
+  // Replicate the single bullet template for each slide on canvas.
+  // The count comes from Swiper's snap grid (set by useCanvasSlider).
+  const sliderSnapCounts = useEditorStore((s) => s.sliderSnapCounts);
+  const children = useMemo(() => {
+    if (!isEditMode || layer.name !== 'slideBullets' || !baseChildren?.length) return baseChildren;
+    const currentPageId = useEditorStore.getState().currentPageId;
+    if (!currentPageId) return baseChildren;
+    const allLayers = usePagesStore.getState().draftsByPageId[currentPageId]?.layers;
+    if (!allLayers) return baseChildren;
+    const slider = findAncestorByName(allLayers, layer.id, 'slider');
+    if (!slider) return baseChildren;
+    const bulletCount = sliderSnapCounts[slider.id] || slider.children?.find(c => c.name === 'slides')?.children?.length || 1;
+    const bulletTemplate = baseChildren[0];
+    return Array.from({ length: bulletCount }, (_, i) => ({
+      ...bulletTemplate,
+      id: bulletTemplate.id,
+      _bulletKey: `${bulletTemplate.id}-${i}`,
+    }));
+  }, [isEditMode, layer.name, layer.id, baseChildren, sliderSnapCounts]);
+
+  // For slider layers, strip inactive pagination/navigation children entirely
+  const effectiveChildren = useMemo(() => {
+    if (layer.name !== 'slider' || !children?.length) return children;
+    return filterDisabledSliderLayers(children, layer.settings);
+  }, [layer.name, layer.settings, children]);
 
   // Use sortable for drag and drop
   const {
@@ -1194,6 +1222,10 @@ const LayerItem: React.FC<{
       layer,
     },
   });
+
+  // Canvas slider: init Swiper on slider layers and handle slide navigation
+  const sliderRef = useRef<HTMLElement | null>(null);
+  useCanvasSlider(sliderRef, layer, isEditMode);
 
   const startEditing = (clickX?: number, clickY?: number) => {
     // Enable inline editing for text layers (both rich text and plain text)
@@ -1307,12 +1339,13 @@ const LayerItem: React.FC<{
   const fullClassName = isEditMode ? clsx(
     classesString,
     paragraphClasses,
+    SWIPER_CLASS_MAP[layer.name],
     enableDragDrop && !isEditing && !isLockedByOther && 'cursor-default',
     isDragging && 'opacity-30',
     showProjection && 'outline outline-1 outline-dashed outline-blue-400 bg-blue-50/10',
     isLockedByOther && 'opacity-90 pointer-events-none select-none',
     'ycode-layer'
-  ) : clsx(classesString, paragraphClasses, buttonNeedsFit && 'w-fit');
+  ) : clsx(classesString, paragraphClasses, SWIPER_CLASS_MAP[layer.name], buttonNeedsFit && 'w-fit');
 
   // Check if layer should be hidden (hide completely in both edit mode and public pages)
   if (layer.settings?.hidden) {
@@ -1474,16 +1507,25 @@ const LayerItem: React.FC<{
     // Check if element is truly empty (no text, no children)
     const isEmpty = !textContent && (!children || children.length === 0);
 
+    // Layers with a visible border or background shouldn't show the empty placeholder (canvas only)
+    const hasVisualStyle = isEditMode && isEmpty && (
+      (classesString && /\b(bg-|border-)/.test(classesString)) ||
+      Object.keys(mergedStyle).some(k => k.startsWith('background') || k.startsWith('border'))
+    );
+
     // Check if this is the Body layer (locked)
     const isLocked = layer.id === 'body';
 
     // Build props for the element
-    const combinedRef = isFilterLayer
-      ? (node: HTMLElement | null) => {
-        setNodeRef(node);
+    const combinedRef = (node: HTMLElement | null) => {
+      setNodeRef(node);
+      if (isFilterLayer) {
         (filterLayerRef as React.MutableRefObject<HTMLDivElement | null>).current = node as HTMLDivElement | null;
       }
-      : setNodeRef;
+      if (layer.name === 'slider') {
+        sliderRef.current = node;
+      }
+    };
 
     const elementProps: Record<string, unknown> = {
       ref: combinedRef,
@@ -1492,6 +1534,7 @@ const LayerItem: React.FC<{
       'data-layer-id': layer.id,
       'data-layer-type': htmlTag,
       'data-is-empty': isEmpty ? 'true' : 'false',
+      ...(hasVisualStyle && { 'data-has-visual': 'true' }),
       ...(enableDragDrop && !isEditing && !isLockedByOther ? { ...normalizedAttributes, ...listeners } : normalizedAttributes),
     };
 
@@ -1538,10 +1581,27 @@ const LayerItem: React.FC<{
       elementProps['data-alert-type'] = layer.alertType;
     }
 
+    // Add slider data attributes for production/preview rendering (SliderInitializer)
+    if (!isEditMode) {
+      if (layer.name === 'slider' && layer.settings?.slider) {
+        elementProps['data-slider-id'] = layer.id;
+        elementProps['data-slider-settings'] = JSON.stringify(layer.settings.slider);
+      }
+      if (SWIPER_DATA_ATTR_MAP[layer.name]) {
+        elementProps[SWIPER_DATA_ATTR_MAP[layer.name]] = '';
+      }
+    }
+
     // Hide elements with hiddenGenerated: true by default (in all modes)
     if (layer.hiddenGenerated) {
       const existingStyle = typeof elementProps.style === 'object' ? elementProps.style : {};
       elementProps.style = { ...existingStyle, display: 'none' };
+    }
+
+    // Hide bullet pagination template until Swiper generates the real bullets
+    if (!isEditMode && layer.name === 'slideBullets') {
+      const existingStyle = typeof elementProps.style === 'object' ? elementProps.style : {};
+      elementProps.style = { ...existingStyle, visibility: 'hidden' as const };
     }
 
     // Hide elements that have display: hidden animation with on-load apply style (edit mode only)
@@ -2180,9 +2240,9 @@ const LayerItem: React.FC<{
       return (
         <Tag {...mediaProps}>
           {textContent && textContent}
-          {children && children.length > 0 && (
+          {effectiveChildren && effectiveChildren.length > 0 && (
             <LayerRenderer
-              layers={children}
+              layers={effectiveChildren}
               onLayerClick={onLayerClick}
               onLayerUpdate={onLayerUpdate}
               onLayerHover={onLayerHover}
@@ -2357,9 +2417,9 @@ const LayerItem: React.FC<{
               >
                 {textContent && textContent}
 
-                {children && children.length > 0 && (
+                {effectiveChildren && effectiveChildren.length > 0 && (
                   <LayerRenderer
-                    layers={children}
+                    layers={effectiveChildren}
                     onLayerClick={onLayerClick}
                     onLayerUpdate={onLayerUpdate}
                     onLayerHover={onLayerHover}
@@ -2421,9 +2481,9 @@ const LayerItem: React.FC<{
           {textContent && textContent}
 
           {/* Render children with format prop */}
-          {children && children.length > 0 && (
+          {effectiveChildren && effectiveChildren.length > 0 && (
             <LayerRenderer
-              layers={children}
+              layers={effectiveChildren}
               onLayerClick={onLayerClick}
               onLayerUpdate={onLayerUpdate}
               onLayerHover={onLayerHover}
@@ -2476,6 +2536,7 @@ const LayerItem: React.FC<{
       );
     }
 
+    // In edit mode, slides wrapper shows only the slide containing the selection
     // Regular elements with text and/or children
     return (
       <Tag {...elementProps}>
@@ -2490,9 +2551,9 @@ const LayerItem: React.FC<{
         {textContent && textContent}
 
         {/* Render children */}
-        {children && children.length > 0 && (
+        {effectiveChildren && effectiveChildren.length > 0 && (
           <LayerRenderer
-            layers={children}
+            layers={effectiveChildren}
             onLayerClick={onLayerClick}
             onLayerUpdate={onLayerUpdate}
             onLayerHover={onLayerHover}

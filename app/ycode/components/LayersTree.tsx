@@ -34,7 +34,7 @@ import { useAuthStore } from '@/stores/useAuthStore';
 // 6. Utils/lib
 import { cn } from '@/lib/utils';
 import { flattenTree, type FlattenedItem } from '@/lib/tree-utilities';
-import { canHaveChildren, getLayerIcon, getLayerName, getCollectionVariable, canMoveLayer, updateLayerProps } from '@/lib/layer-utils';
+import { canHaveChildren, getLayerIcon, getLayerName, getCollectionVariable, canMoveLayer, updateLayerProps, filterDisabledSliderLayers } from '@/lib/layer-utils';
 import { MULTI_ASSET_COLLECTION_ID } from '@/lib/collection-field-utils';
 import { hasStyleOverrides } from '@/lib/layer-style-utils';
 import { getUserInitials, getDisplayName } from '@/lib/collaboration-utils';
@@ -708,7 +708,8 @@ export default function LayersTree({
   // Flatten the tree for rendering (sorted by CSS order on responsive breakpoints)
   const flattenedNodes = useMemo(
     () => {
-      const flattened = flattenTree(layers, null, 0, collapsedIds, activeBreakpoint);
+      const visibleLayers = filterDisabledSliderLayers(layers);
+      const flattened = flattenTree(visibleLayers, null, 0, collapsedIds, activeBreakpoint);
 
       // Validate no duplicate IDs in flattened array
       if (process.env.NODE_ENV === 'development') {

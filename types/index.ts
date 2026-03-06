@@ -153,6 +153,31 @@ export interface FormSettings {
   };
 }
 
+export type SliderAnimationEffect = 'Slide' | 'Fade' | 'Cube' | 'Flip' | 'Coverflow' | 'Cards';
+export type SliderLoopMode = 'none' | 'loop' | 'rewind';
+export type SliderPaginationType = 'bullets' | 'fraction';
+
+export interface SliderSettings {
+  navigation: boolean;
+  groupSlide: number;
+  slidesPerGroup: number;
+  loop: SliderLoopMode;
+  centered: boolean;
+  touchEvents: boolean;
+  slideToClicked: boolean;
+  mousewheel: boolean;
+
+  pagination: boolean;
+  paginationType: SliderPaginationType;
+  paginationClickable: boolean;
+  autoplay: boolean;
+  pauseOnHover: boolean;
+  delay: string; // Autoplay delay in seconds
+  animationEffect: SliderAnimationEffect;
+  easing: string;
+  duration: string; // Transition duration in seconds
+}
+
 export interface LayerSettings {
   id?: string; // Custom element ID
   tag?: string; // HTML tag override (e.g., 'h1', 'h2', etc.)
@@ -164,6 +189,7 @@ export interface LayerSettings {
   htmlEmbed?: {
     code?: string; // Custom HTML code to embed
   };
+  slider?: SliderSettings; // Slider-specific settings (only for slider layers)
   form?: FormSettings; // Form-specific settings (only for form layers)
   filterOnChange?: boolean; // For filter layers: trigger filtering on every input change (debounced)
   optionsSource?: {

@@ -6,6 +6,7 @@ import { Layer, FieldVariable, CollectionVariable, CollectionItemWithValues, Col
 import { generateId } from '@/lib/utils';
 import { iconExists, IconProps } from '@/components/ui/icon';
 import { getBlockIcon, getBlockName } from '@/lib/templates/blocks';
+import { isSliderLayerName } from '@/lib/templates/utilities';
 import { resolveInlineVariablesFromData } from '@/lib/inline-variables';
 import { applyComponentOverrides } from '@/lib/resolve-components';
 import { resolveFieldFromSources } from '@/lib/cms-variables-utils';
@@ -105,6 +106,44 @@ export function findAncestor(
  */
 export function findAncestorByName(layers: Layer[], layerId: string, ancestorName: string): Layer | null {
   return findAncestor(layers, layerId, (layer) => layer.name === ancestorName);
+}
+
+/**
+ * Recursively filter out disabled slider sub-layers from the tree.
+ * Hides navigation/pagination wrappers when disabled, and shows only the
+ * active pagination type (bullets vs fraction) inside the pagination wrapper.
+ */
+export function filterDisabledSliderLayers(layers: Layer[], sliderSettings?: Layer['settings']): Layer[] {
+  const sliderConfig = sliderSettings?.slider;
+
+  // When called with sliderSettings we're already inside a slider context,
+  // so filter disabled nav/pagination wrappers at the current level.
+  const inputLayers = sliderConfig
+    ? layers.filter(layer => {
+      if (layer.name === 'slideNavigationWrapper' && !sliderConfig.navigation) return false;
+      if (layer.name === 'slidePaginationWrapper' && !sliderConfig.pagination) return false;
+      return true;
+    })
+    : layers;
+
+  return inputLayers.map(layer => {
+    if (!layer.children?.length) return layer;
+
+    const currentSliderSettings = layer.name === 'slider' ? layer.settings : sliderSettings;
+    let filteredChildren = filterDisabledSliderLayers(layer.children, currentSliderSettings);
+    const settings = currentSliderSettings?.slider;
+
+    if (layer.name === 'slidePaginationWrapper' && settings) {
+      const isFraction = settings.paginationType === 'fraction';
+      filteredChildren = filteredChildren.filter(child => {
+        if (child.name === 'slideBullets' && isFraction) return false;
+        if (child.name === 'slideFraction' && !isFraction) return false;
+        return true;
+      });
+    }
+
+    return filteredChildren === layer.children ? layer : { ...layer, children: filteredChildren };
+  });
 }
 
 /**
@@ -233,6 +272,12 @@ export function findLayerById(layers: Layer[], id: string): Layer | null {
     }
   }
   return null;
+}
+
+/** Check if a layer or any of its descendants has the given ID */
+export function containsLayerId(layer: Layer, targetId: string): boolean {
+  if (layer.id === targetId) return true;
+  return layer.children?.some(child => containsLayerId(child, targetId)) ?? false;
 }
 
 /**
@@ -1046,6 +1091,11 @@ export function getLayerHtmlTag(layer: Layer): string {
 
   if (layer.settings?.tag) {
     return layer.settings.tag;
+  }
+
+  // Slider sub-layers always render as divs
+  if (isSliderLayerName(layer.name)) {
+    return 'div';
   }
 
   return layer.name || 'div';

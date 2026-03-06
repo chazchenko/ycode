@@ -45,8 +45,9 @@ export function SelectionOverlay({
   const hoveredContainerRef = useRef<HTMLDivElement>(null);
   const parentContainerRef = useRef<HTMLDivElement>(null);
   
-  // Track drag state for scroll/mutation handlers
+  // Track drag/animation state for scroll/mutation handlers
   const isDraggingRef = useRef(false);
+  const isSliderAnimatingRef = useRef(false);
 
   const hideAllOutlines = useCallback(() => {
     if (selectedContainerRef.current) selectedContainerRef.current.style.display = 'none';
@@ -112,6 +113,11 @@ export function SelectionOverlay({
 
   // Update all outlines
   const updateAllOutlines = useCallback((skipSolidBorders = false) => {
+    if (isSliderAnimatingRef.current) {
+      hideAllOutlines();
+      return;
+    }
+
     if (!iframeElement || !containerElement) {
       hideAllOutlines();
       return;
@@ -257,6 +263,18 @@ export function SelectionOverlay({
       updateAllOutlines(false);
     }
   }, [isDraggingLayerOnCanvas, updateAllOutlines, hideAllOutlines]);
+
+  // Hide outlines during slider transitions
+  const isSliderAnimating = useEditorStore((state) => state.isSliderAnimating);
+
+  useEffect(() => {
+    isSliderAnimatingRef.current = isSliderAnimating;
+    if (isSliderAnimating) {
+      hideAllOutlines();
+    } else {
+      updateAllOutlines();
+    }
+  }, [isSliderAnimating, updateAllOutlines, hideAllOutlines]);
 
   return (
     <div className="absolute inset-0 pointer-events-none overflow-hidden z-40">

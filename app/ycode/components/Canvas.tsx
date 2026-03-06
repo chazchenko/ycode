@@ -20,6 +20,7 @@ import { serializeLayers, getClassesString } from '@/lib/layer-utils';
 import { collectEditorHiddenLayerIds } from '@/lib/animation-utils';
 import { getCanvasIframeHtml } from '@/lib/canvas-utils';
 import { cn } from '@/lib/utils';
+import { loadSwiperCss } from '@/lib/slider-utils';
 import { useFontsStore } from '@/stores/useFontsStore';
 
 import type { Layer, Component, CollectionItemWithValues, CollectionField, Breakpoint, Asset, ComponentVariable } from '@/types';
@@ -144,13 +145,27 @@ function CanvasContent({
     [editingComponentId]
   );
 
-  // Handle click on canvas body (select body when clicking on empty space)
-  const handleBodyClick = (event: React.MouseEvent) => {
-    // Only select body if clicking directly on it (not on a child layer)
-    if (event.target === event.currentTarget) {
-      onLayerClick('body', event);
-    }
-  };
+  // Select body layer when clicking on empty canvas space.
+  // The #canvas-body div uses display:contents so it has no box — clicks on
+  // empty space land on the iframe <body>, which is outside the React root.
+  // We attach a native listener on the iframe body to handle this.
+  useEffect(() => {
+    if (!bodyRef.current) return;
+    const iframeBody = bodyRef.current.ownerDocument.body;
+
+    const handleBodyClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const isCanvasChrome = target === iframeBody
+        || target.id === 'canvas-mount'
+        || target.id === 'canvas-body';
+      if (isCanvasChrome) {
+        onLayerClick('body');
+      }
+    };
+
+    iframeBody.addEventListener('click', handleBodyClick);
+    return () => iframeBody.removeEventListener('click', handleBodyClick);
+  }, [onLayerClick]);
 
   const bodyLayer = layers.find(l => l.id === 'body');
   const bodyClasses = bodyLayer ? getClassesString(bodyLayer) : '';
@@ -183,7 +198,6 @@ function CanvasContent({
       id="canvas-body"
       data-layer-id="body"
       className="contents"
-      onClick={handleBodyClick}
     >
       <LayerRenderer
         layers={childLayers}
@@ -320,6 +334,9 @@ export default function Canvas({
       doc.open();
       doc.write(getCanvasIframeHtml('canvas-mount'));
       doc.close();
+
+      // Load minimal Swiper CSS (no layout overrides that conflict with Tailwind)
+      loadSwiperCss(doc);
 
       // Load GSAP for animations in the canvas iframe
       const gsapScript = doc.createElement('script');

@@ -1,6 +1,7 @@
 import AnimationInitializer from '@/components/AnimationInitializer';
 import ContentHeightReporter from '@/components/ContentHeightReporter';
 import LayerRenderer from '@/components/LayerRenderer';
+import SliderInitializer from '@/components/SliderInitializer';
 import PasswordForm from '@/components/PasswordForm';
 import { resolveCustomCodePlaceholders } from '@/lib/resolve-cms-variables';
 import { generateInitialAnimationCSS, type HiddenLayerInfo } from '@/lib/animation-utils';
@@ -12,6 +13,15 @@ import { getItemWithValues } from '@/lib/repositories/collectionItemRepository';
 import { getFieldsByCollectionId } from '@/lib/repositories/collectionFieldRepository';
 import { getClassesString } from '@/lib/layer-utils';
 import type { Layer, Component, Page, CollectionItemWithValues, CollectionField, Locale, PageFolder } from '@/types';
+
+/** Recursively check if any layer in the tree is a slider */
+function hasSliderLayers(layers: Layer[]): boolean {
+  for (const layer of layers) {
+    if (layer.name === 'slider') return true;
+    if (layer.children && hasSliderLayers(layer.children)) return true;
+  }
+  return false;
+}
 
 /** Password protection context for 401 error pages */
 export type PasswordProtectionContext = {
@@ -353,6 +363,9 @@ export default async function PageRenderer({
 
       {/* Initialize GSAP animations based on layer interactions */}
       <AnimationInitializer layers={resolvedLayers} />
+
+      {/* Initialize Swiper on slider elements */}
+      {hasSliderLayers(resolvedLayers) && <SliderInitializer />}
 
       {/* Report content height to parent for zoom calculations (preview only) */}
       {!page.is_published && <ContentHeightReporter />}

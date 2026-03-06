@@ -15,13 +15,13 @@ export default function UIStateSelector({ selectedLayer }: UIStateSelectorProps)
   // Determine which states are applicable for the current layer
   const isDisabledApplicable = () => {
     if (!selectedLayer) return false;
-    const applicableTypes = ['button', 'input', 'textarea', 'select'];
+    const applicableTypes = ['button', 'input', 'textarea', 'select', 'slideButtonPrev', 'slideButtonNext'];
     return applicableTypes.includes(selectedLayer.name || '');
   };
 
   const isCurrentApplicable = () => {
     if (!selectedLayer) return false;
-    const applicableTypes = ['link', 'a', 'navigation'];
+    const applicableTypes = ['link', 'a', 'navigation', 'slideBullet'];
     return applicableTypes.includes(selectedLayer.name || '');
   };
 

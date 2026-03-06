@@ -3,7 +3,7 @@ import { buildSlugPath, buildDynamicPageUrl, buildLocalizedSlugPath, buildLocali
 import { getItemWithValues, getItemsWithValues } from '@/lib/repositories/collectionItemRepository';
 import { getFieldsByCollectionId } from '@/lib/repositories/collectionFieldRepository';
 import type { Page, PageFolder, PageLayers, Component, ComponentVariable, CollectionItemWithValues, CollectionField, Layer, CollectionPaginationMeta, Translation, Locale } from '@/types';
-import { getCollectionVariable, resolveFieldValue, evaluateVisibility } from '@/lib/layer-utils';
+import { getCollectionVariable, resolveFieldValue, evaluateVisibility, getLayerHtmlTag, filterDisabledSliderLayers } from '@/lib/layer-utils';
 import { isFieldVariable, isAssetVariable, createDynamicTextVariable, createDynamicRichTextVariable, createAssetVariable, getDynamicTextContent, getVariableStringValue, getAssetId, resolveDesignStyles } from '@/lib/variable-utils';
 import { generateImageSrcset, getImageSizes, getOptimizedImageUrl, getAssetProxyUrl, DEFAULT_ASSETS, collectLayerAssetIds } from '@/lib/asset-utils';
 import { resolveComponents, applyComponentOverrides } from '@/lib/resolve-components';
@@ -18,6 +18,7 @@ export interface PaginationContext {
   defaultPage?: number;
 }
 import { resolveFieldLinkValue } from '@/lib/link-utils';
+import { SWIPER_CLASS_MAP, SWIPER_DATA_ATTR_MAP } from '@/lib/templates/utilities';
 import { resolveInlineVariables, resolveInlineVariablesFromData } from '@/lib/inline-variables';
 import { buildLayerTranslationKey, getTranslationByKey, hasValidTranslationValue, getTranslationValue } from '@/lib/localisation-utils';
 import { formatDateFieldsInItemValues } from '@/lib/date-format-utils';
@@ -2973,7 +2974,7 @@ function layerToHtml(
   const effectiveLayerDataMap = layer._layerDataMap || layerDataMap;
 
   // Get the HTML tag
-  let tag = layer.settings?.tag || layer.name || 'div';
+  let tag = getLayerHtmlTag(layer);
 
   // Buttons with link settings render as <a> directly instead of being
   // wrapped in <a><button></button></a> which is invalid HTML
@@ -3001,11 +3002,29 @@ function layerToHtml(
     }
   }
 
+  // Add Swiper-specific classes for slider layers
+  if (SWIPER_CLASS_MAP[layer.name]) {
+    classesStr = classesStr
+      ? `${classesStr} ${SWIPER_CLASS_MAP[layer.name]}`
+      : SWIPER_CLASS_MAP[layer.name];
+  }
+
   // Build attributes
   const attrs: string[] = [];
 
   if (layer.id) {
     attrs.push(`data-layer-id="${escapeHtml(layer.id)}"`);
+  }
+
+  // Add data attributes for slider nav/pagination elements (used by SliderInitializer)
+  if (SWIPER_DATA_ATTR_MAP[layer.name]) {
+    attrs.push(SWIPER_DATA_ATTR_MAP[layer.name]);
+  }
+
+  // Add slider settings as data attribute on the root slider layer
+  if (layer.name === 'slider' && layer.settings?.slider) {
+    attrs.push(`data-slider-id="${escapeHtml(layer.id)}"`);
+    attrs.push(`data-slider-settings="${escapeHtml(JSON.stringify(layer.settings.slider))}"`);
   }
 
   // Render filter-dependent conditional visibility data attributes
@@ -3022,6 +3041,18 @@ function layerToHtml(
 
   if (layer.attributes?.id) {
     attrs.push(`id="${escapeHtml(layer.attributes.id)}"`);
+  }
+
+  // Hide elements marked as hiddenGenerated (e.g. alerts, slider fraction placeholder)
+  if (layer.hiddenGenerated) {
+    const existingDynamic = layer._dynamicStyles || {};
+    layer = { ...layer, _dynamicStyles: { ...existingDynamic, display: 'none' } };
+  }
+
+  // Hide bullet pagination template until Swiper initializes and generates the real bullets
+  if (layer.name === 'slideBullets') {
+    const existingDynamic = layer._dynamicStyles || {};
+    layer = { ...layer, _dynamicStyles: { ...existingDynamic, visibility: 'hidden' } };
   }
 
   // Build inline styles from dynamic sources (CMS color bindings + background image variable)
@@ -3446,9 +3477,14 @@ function layerToHtml(
     attrs.push('role="button"');
   }
 
+  // For slider layers, strip inactive pagination/navigation children from the tree
+  const effectiveChildren = (layer.name === 'slider' && layer.children)
+    ? filterDisabledSliderLayers(layer.children, layer.settings)
+    : layer.children;
+
   // Render children
-  const childrenHtml = layer.children
-    ? layer.children
+  const childrenHtml = effectiveChildren
+    ? effectiveChildren
       .map((child) =>
         layerToHtml(child, effectiveCollectionItemId, pages, folders, collectionItemSlugs, locale, translations, anchorMap, effectiveCollectionItemData, pageCollectionItemData, assetMap, effectiveLayerDataMap, components, ancestorComponentIds)
       )

@@ -146,6 +146,12 @@ interface EditorStoreWithHistory extends EditorState {
   dragElementSource: 'elements' | 'layouts' | 'components' | null;
   dragPosition: DragPosition | null;
   canvasDropTarget: CanvasDropTarget | null;
+  // Slider transition state (hides outlines during slide animation)
+  isSliderAnimating: boolean;
+  setSliderAnimating: (value: boolean) => void;
+  // Swiper-calculated snap page counts per slider (used for bullet replication)
+  sliderSnapCounts: Record<string, number>;
+  setSliderSnapCount: (sliderId: string, count: number) => void;
   // Canvas sibling reorder state
   isDraggingLayerOnCanvas: boolean;
   draggedLayerId: string | null;
@@ -219,6 +225,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   dragElementSource: null,
   dragPosition: null,
   canvasDropTarget: null,
+  isSliderAnimating: false,
+  setSliderAnimating: (value) => set({ isSliderAnimating: value }),
+  sliderSnapCounts: {},
+  setSliderSnapCount: (sliderId, count) => set((state) => ({
+    sliderSnapCounts: { ...state.sliderSnapCounts, [sliderId]: count },
+  })),
   // Canvas sibling reorder initial state
   isDraggingLayerOnCanvas: false,
   draggedLayerId: null,
