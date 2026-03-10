@@ -2586,7 +2586,7 @@ const RightSidebar = React.memo(function RightSidebar({
                 <Popover open={showAddAttributePopover} onOpenChange={setShowAddAttributePopover}>
                   <PopoverTrigger asChild>
                     <Button
-                      variant="secondary"
+                      variant="ghost"
                       size="xs"
                     >
                       <Icon name="plus" />

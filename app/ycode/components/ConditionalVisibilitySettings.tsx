@@ -702,7 +702,7 @@ export default function ConditionalVisibilitySettings({
       action={
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="secondary" size="xs">
+            <Button variant="ghost" size="xs">
               <Icon name="plus" />
             </Button>
           </DropdownMenuTrigger>
