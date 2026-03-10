@@ -337,6 +337,23 @@ const PageSettingsPanel = React.forwardRef<PageSettingsPanelHandle, PageSettings
     return null;
   }, [currentPage, pageFolderId, pages, isDynamicPage]);
 
+  const cmsSiblingWarning = useMemo(() => {
+    if (!isDynamicPage || !currentPage) return null;
+
+    const targetFolderId = pageFolderId !== undefined ? pageFolderId : currentPage.page_folder_id;
+    const hasSibling = pages.some(
+      (p) =>
+        p.id !== currentPage.id &&
+        p.is_dynamic &&
+        p.page_folder_id === targetFolderId &&
+        p.is_published === (currentPage.is_published || false)
+    );
+
+    return hasSibling
+      ? 'Multiple CMS pages are present in this folder, this could cause URL conflicts if CMS items are using the same slugs or ids.'
+      : null;
+  }, [currentPage, pageFolderId, pages, isDynamicPage]);
+
   const hasUnsavedChanges = useMemo(() => {
     if (!initialValuesRef.current) return false;
 
@@ -1065,26 +1082,6 @@ const PageSettingsPanel = React.forwardRef<PageSettingsPanelHandle, PageSettings
       }
 
       // Check if trying to make a page dynamic or move a dynamic page to a folder that already has one
-      const targetFolderId = pageFolderId;
-      const willBeDynamic = isDynamicPage;
-      const isBecomingDynamic = isDynamicPage && !currentPage?.is_dynamic;
-      const isMovingDynamicPage = currentPage?.is_dynamic && pageFolderId !== currentPage?.page_folder_id;
-
-      if (willBeDynamic && (isBecomingDynamic || isMovingDynamicPage)) {
-        const existingDynamicPage = pages.find(
-          (p) =>
-            p.id !== currentPage?.id && // Exclude current page
-            p.is_dynamic &&
-            p.page_folder_id === targetFolderId &&
-            p.is_published === (currentPage?.is_published || false) // Same published state
-        );
-
-        if (existingDynamicPage) {
-          const folderName = targetFolderId ? 'this folder' : 'the root folder';
-          setError(`A dynamic page already exists in ${folderName}. Each folder can only contain one dynamic page.`);
-          return;
-        }
-      }
     }
 
     setIsSaving(true);
@@ -1144,7 +1141,7 @@ const PageSettingsPanel = React.forwardRef<PageSettingsPanelHandle, PageSettings
       };
 
       // Sanitize slug and remove trailing dashes before saving
-      const finalSlug = isErrorPage || isIndex ? '' : sanitizeSlug(slug.trim(), false);
+      const finalSlug = isErrorPage || isIndex ? '' : (isDynamicPage ? '*' : sanitizeSlug(slug.trim(), false));
 
       await onSave({
         name: name.trim(),
@@ -1162,7 +1159,7 @@ const PageSettingsPanel = React.forwardRef<PageSettingsPanelHandle, PageSettings
       }
 
       const trimmedName = name.trim();
-      const trimmedSlug = isErrorPage || isIndex ? '' : sanitizeSlug(slug.trim(), false);
+      const trimmedSlug = isErrorPage || isIndex ? '' : (isDynamicPage ? '*' : sanitizeSlug(slug.trim(), false));
       const trimmedSeoTitle = seoTitle.trim();
       const trimmedSeoDescription = seoDescription.trim();
       const normalizedSeoNoindex = isErrorPage ? true : seoNoindex;
@@ -1283,10 +1280,19 @@ const PageSettingsPanel = React.forwardRef<PageSettingsPanelHandle, PageSettings
             )}
 
             <TabsContent value="general">
-              {urlConflictWarning && (
-                <Alert variant="warning" className="mb-4">
-                  <AlertDescription>{urlConflictWarning}</AlertDescription>
-                </Alert>
+              {(urlConflictWarning || cmsSiblingWarning) && (
+                <div className="flex flex-col gap-2 mb-4">
+                  {urlConflictWarning && (
+                    <Alert variant="warning">
+                      <AlertDescription>{urlConflictWarning}</AlertDescription>
+                    </Alert>
+                  )}
+                  {cmsSiblingWarning && (
+                    <Alert variant="warning">
+                      <AlertDescription>{cmsSiblingWarning}</AlertDescription>
+                    </Alert>
+                  )}
+                </div>
               )}
               <FieldGroup>
                 <FieldSet>
