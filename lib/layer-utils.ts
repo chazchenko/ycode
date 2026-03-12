@@ -471,6 +471,7 @@ const SUBLAYER_ICON_MAP: Record<string, string> = {
   orderedList: 'listOrdered',
   blockquote: 'quote',
   richTextComponent: 'component',
+  richTextImage: 'image',
 };
 
 /**
@@ -496,7 +497,7 @@ export function getRichTextSublayers(layer: Layer): RichTextSublayer[] {
         orderedList: 'Ordered List',
         blockquote: 'Blockquote',
         richTextComponent: 'Component',
-        image: 'Image',
+        richTextImage: 'Image',
         codeBlock: 'Code Block',
         horizontalRule: 'Divider',
       };

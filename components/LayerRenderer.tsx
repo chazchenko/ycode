@@ -11,7 +11,7 @@ import { useLocalisationStore } from '@/stores/useLocalisationStore';
 import type { Layer, Locale, ComponentVariable, FormSettings, LinkSettings, Breakpoint, CollectionItemWithValues, Component } from '@/types';
 import type { UseLiveLayerUpdatesReturn } from '@/hooks/use-live-layer-updates';
 import type { UseLiveComponentUpdatesReturn } from '@/hooks/use-live-component-updates';
-import { getLayerHtmlTag, getClassesString, getText, resolveFieldValue, isTextEditable, isTextContentLayer, getCollectionVariable, evaluateVisibility, findAncestorByName, filterDisabledSliderLayers } from '@/lib/layer-utils';
+import { getLayerHtmlTag, getClassesString, getText, resolveFieldValue, isTextEditable, isTextContentLayer, isRichTextLayer, getCollectionVariable, evaluateVisibility, findAncestorByName, filterDisabledSliderLayers } from '@/lib/layer-utils';
 import { SWIPER_CLASS_MAP, SWIPER_DATA_ATTR_MAP } from '@/lib/templates/utilities';
 import { useCanvasSlider } from '@/hooks/use-canvas-slider';
 import { resolveFieldFromSources } from '@/lib/cms-variables-utils';
@@ -1737,7 +1737,14 @@ const LayerItem: React.FC<{
           return;
         }
 
-        // Rich text with components or inline variables: open sheet editor instead of canvas editing
+        // RichText layers: always open sheet editor (block-level content needs full toolbar)
+        if (isRichTextLayer(layer)) {
+          useEditorStore.getState().setActiveSublayerIndex(null);
+          useEditorStore.getState().openRichTextSheet(layer.id);
+          return;
+        }
+
+        // Text/Heading with components or inline variables: open sheet editor
         if (textEditable) {
           const textVar = layer.variables?.text;
           const richContent = textVar?.type === 'dynamic_rich_text' ? textVar.data.content : null;
@@ -1747,7 +1754,7 @@ const LayerItem: React.FC<{
           }
         }
 
-        // Text-editable layers: start inline editing
+        // Text/Heading layers: start inline editing
         startEditing(e.clientX, e.clientY);
       };
       // Prevent context menu from bubbling

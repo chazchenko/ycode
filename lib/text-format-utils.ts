@@ -178,6 +178,15 @@ export const DEFAULT_TEXT_STYLES: Record<string, TextStyle> = {
       spacing: { paddingLeft: '16px' },
     },
   },
+  richTextImage: {
+    label: 'Image',
+    classes: 'block max-w-full h-auto rounded-[4px]',
+    design: {
+      layout: { display: 'block' },
+      sizing: { maxWidth: '100%', height: 'auto' },
+      borders: { borderRadius: '4px' },
+    },
+  },
 };
 
 /**
@@ -868,6 +877,22 @@ function renderBlock(
         renderBlock(child, childIdx, collectionItemData, pageCollectionItemData, textStyles, useSpanForParagraphs, isEditMode, linkContext, timezone, layerDataMap, components, renderComponentBlock, ancestorComponentIds)
       )
     );
+  }
+
+  if (block.type === 'richTextImage') {
+    const imgProps: Record<string, any> = {
+      key,
+      src: block.attrs?.src || '',
+      alt: block.attrs?.alt || '',
+      className: getTextStyleClasses(textStyles, 'richTextImage'),
+    };
+    if (isEditMode) {
+      imgProps['data-style'] = 'richTextImage';
+    }
+    if (block.attrs?.assetId) {
+      imgProps['data-asset-id'] = block.attrs.assetId;
+    }
+    return React.createElement('img', imgProps);
   }
 
   // Handle embedded component blocks

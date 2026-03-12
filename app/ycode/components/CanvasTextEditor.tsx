@@ -31,6 +31,7 @@ import ListItem from '@tiptap/extension-list-item';
 import Heading from '@tiptap/extension-heading';
 import Blockquote from '@tiptap/extension-blockquote';
 import Code from '@tiptap/extension-code';
+import { RichTextImage } from '@/lib/tiptap-extensions/rich-text-image';
 import { getTextStyleClasses } from '@/lib/text-format-utils';
 import type { Layer, TextStyle, CollectionField, Collection } from '@/types';
 import type { FieldVariable } from '@/types';
@@ -421,6 +422,7 @@ const CanvasTextEditor = forwardRef<CanvasTextEditorHandle, CanvasTextEditorProp
     createHeadingExtension(textStylesRef.current),
     createBlockquoteExtension(textStylesRef.current),
     Code,
+    RichTextImage,
     createDynamicStyleExtension(textStylesRef),
   ], []);
 
@@ -447,11 +449,7 @@ const CanvasTextEditor = forwardRef<CanvasTextEditorHandle, CanvasTextEditorProp
     content: initialContent,
     editorProps: {
       attributes: {
-        class: cn(
-          'outline-none ycode-text-editor',
-          layer.name === 'richText' && 'flex flex-col',
-          layer.name === 'richText' && (Array.isArray(layer.classes) ? layer.classes : (layer.classes || '').split(' ')).filter((c: string) => c.startsWith('gap-')).join(' '),
-        ),
+        class: 'outline-none ycode-text-editor',
       },
       handleKeyDown: (view, event) => {
         // Escape to save and finish editing
