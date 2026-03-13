@@ -300,9 +300,9 @@ export default function LayerStylesPanel({
                 >
                   <SelectTrigger className="flex-1">
                     {styles.length === 0 ? (
-                    <span className="opacity-50">Select a style...</span>
+                    <span className="opacity-50">Apply layer style...</span>
                     ) : (
-                    <SelectValue placeholder="Select..." />
+                    <SelectValue placeholder="Apply layer style..." />
                     )}
                     {/* Show "Customised" badge when there are overrides */}
                     {hasOverrides && (
