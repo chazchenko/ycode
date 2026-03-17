@@ -771,7 +771,7 @@ export default function LeftSidebarPages({
                 <Icon name="plus" className={`${isMenuOpen ? 'rotate-45' : 'rotate-0'} transition-transform duration-100`} />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="start" side="bottom">
+            <DropdownMenuContent align="start" side="bottom" onCloseAutoFocus={(e) => e.preventDefault()}>
               <DropdownMenuItem onClick={() => handleAddPage()}>
                 Regular
               </DropdownMenuItem>
