@@ -270,6 +270,25 @@ export function getCollectionVariable(layer: Layer): CollectionVariable | null {
   return layer.variables?.collection ?? null;
 }
 
+const EXCLUDED_FROM_COLLECTION = [
+  'body', 'form', 'filter', 'icon', 'htmlEmbed', 'lightbox', 'slider',
+  'slides', 'slideNavigationWrapper', 'slideButtonPrev', 'slideButtonNext',
+  'slidePaginationWrapper', 'slideBullets', 'slideFraction',
+];
+
+/** Check if a layer type is excluded from collection conversion */
+export function isExcludedFromCollection(layer: Layer): boolean {
+  return EXCLUDED_FROM_COLLECTION.includes(layer.name);
+}
+
+/** Check if a container layer can be converted to a collection */
+export function canConvertToCollection(layer: Layer): boolean {
+  if (layer.componentId) return false;
+  if (getCollectionVariable(layer)) return false;
+  if (isExcludedFromCollection(layer)) return false;
+  return canHaveChildren(layer);
+}
+
 /** Input-type layer names that can be linked to filter conditions */
 const FILTER_INPUT_TYPES = ['input', 'select', 'textarea', 'checkbox', 'radio'];
 

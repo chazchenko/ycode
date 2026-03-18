@@ -1095,6 +1095,8 @@ const LayerItem: React.FC<{
   // Multi-reference: filter to items in the array (loops through all)
   // Multi-asset: build virtual items from asset IDs
   const collectionItems = React.useMemo(() => {
+    if (!collectionId) return [];
+
     let items: CollectionItemWithValues[];
 
     // Handle multi-asset: build virtual items from assets
@@ -1186,7 +1188,7 @@ const LayerItem: React.FC<{
     }
 
     return items;
-  }, [allCollectionItems, sourceFieldId, sourceFieldType, sourceFieldSource, collectionLayerData, pageCollectionItemData, collectionLayerItemId, pageCollectionItemId, getAsset, collectionVariable?.filters, isEditMode]);
+  }, [collectionId, allCollectionItems, sourceFieldId, sourceFieldType, sourceFieldSource, collectionLayerData, pageCollectionItemData, collectionLayerItemId, pageCollectionItemId, getAsset, collectionVariable?.filters, isEditMode]);
 
   useEffect(() => {
     if (!isEditMode) return;

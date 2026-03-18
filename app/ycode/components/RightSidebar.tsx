@@ -832,26 +832,8 @@ const RightSidebar = React.memo(function RightSidebar({
     return getRichTextValue(layer?.variables);
   }, []);
 
-  // Handle collection binding change (also resets child bindings when source changes)
-  const handleCollectionChange = (collectionId: string) => {
-    if (!selectedLayerId || !selectedLayer) return;
-
-    const currentCollectionVariable = getCollectionVariable(selectedLayer);
-    handleLayerUpdate(selectedLayerId, {
-      variables: {
-        ...selectedLayer?.variables,
-        collection: collectionId && collectionId !== 'none' ? {
-          id: collectionId,
-          sort_by: currentCollectionVariable?.sort_by,
-          sort_order: currentCollectionVariable?.sort_order,
-          sort_by_inputLayerId: currentCollectionVariable?.sort_by_inputLayerId,
-          sort_order_inputLayerId: currentCollectionVariable?.sort_order_inputLayerId,
-        } : { id: '', source_field_id: undefined, source_field_type: undefined }
-      }
-    });
-
-    // Reset invalid CMS bindings on child layers after the source changed
-    const layerId = selectedLayerId;
+  /** Reset CMS bindings on child layers after the collection source changes */
+  const resetChildBindings = useCallback((layerId: string) => {
     setTimeout(() => {
       const currentLayers = editingComponentId
         ? useComponentsStore.getState().componentDrafts[editingComponentId]
@@ -870,6 +852,37 @@ const RightSidebar = React.memo(function RightSidebar({
         }
       }
     }, 0);
+  }, [editingComponentId, currentPageId, setDraftLayers]);
+
+  // Handle collection binding change (also resets child bindings when source changes)
+  const handleCollectionChange = (collectionId: string) => {
+    if (!selectedLayerId || !selectedLayer) return;
+
+    const currentCollectionVariable = getCollectionVariable(selectedLayer);
+
+    if (!collectionId || collectionId === 'none') {
+      handleLayerUpdate(selectedLayerId, {
+        variables: {
+          ...selectedLayer?.variables,
+          collection: { id: '' }
+        }
+      });
+    } else {
+      handleLayerUpdate(selectedLayerId, {
+        variables: {
+          ...selectedLayer?.variables,
+          collection: {
+            id: collectionId,
+            sort_by: currentCollectionVariable?.sort_by,
+            sort_order: currentCollectionVariable?.sort_order,
+            sort_by_inputLayerId: currentCollectionVariable?.sort_by_inputLayerId,
+            sort_order_inputLayerId: currentCollectionVariable?.sort_order_inputLayerId,
+          }
+        }
+      });
+    }
+
+    resetChildBindings(selectedLayerId);
   };
 
   const SORT_INPUT_VALUE_OPTION = '__input_value__';
@@ -901,11 +914,10 @@ const RightSidebar = React.memo(function RightSidebar({
     const currentCollectionVariable = getCollectionVariable(selectedLayer);
 
     if (value === 'none') {
-      // Clear the collection source
       handleLayerUpdate(selectedLayerId, {
         variables: {
           ...selectedLayer?.variables,
-          collection: { id: '', source_field_id: undefined, source_field_type: undefined, source_field_source: undefined }
+          collection: { id: '' }
         }
       });
     } else if (value.startsWith('inverse:')) {
@@ -956,26 +968,7 @@ const RightSidebar = React.memo(function RightSidebar({
       }
     }
 
-    // Reset invalid CMS bindings on child layers after the source changed
-    const layerId = selectedLayerId;
-    setTimeout(() => {
-      const currentLayers = editingComponentId
-        ? useComponentsStore.getState().componentDrafts[editingComponentId]
-        : currentPageId
-          ? usePagesStore.getState().draftsByPageId[currentPageId]?.layers
-          : null;
-
-      if (!currentLayers) return;
-
-      const cleanedLayers = resetBindingsOnCollectionSourceChange(currentLayers, layerId);
-      if (cleanedLayers !== currentLayers) {
-        if (editingComponentId) {
-          useComponentsStore.getState().updateComponentDraft(editingComponentId, cleanedLayers);
-        } else if (currentPageId) {
-          setDraftLayers(currentPageId, cleanedLayers);
-        }
-      }
-    }, 0);
+    resetChildBindings(selectedLayerId);
   };
 
   // Handle dynamic page source selection (unified handler for field or collection)
@@ -988,7 +981,7 @@ const RightSidebar = React.memo(function RightSidebar({
     let newCollectionVar: CollectionVariable | undefined;
 
     if (value === 'none' || !value) {
-      newCollectionVar = { id: '', source_field_id: undefined, source_field_type: undefined };
+      newCollectionVar = { id: '' };
     } else if (value.startsWith('multi_asset:')) {
       const fieldId = value.replace('multi_asset:', '');
       const selectedField = dynamicPageMultiAssetFields.find(f => f.id === fieldId);
@@ -1043,27 +1036,7 @@ const RightSidebar = React.memo(function RightSidebar({
       variables: { ...selectedLayer?.variables, collection: newCollectionVar }
     });
 
-    // Reset invalid CMS bindings on child layers after the source changed
-    // Use setTimeout to ensure the layer update is applied first
-    const layerId = selectedLayerId;
-    setTimeout(() => {
-      const currentLayers = editingComponentId
-        ? useComponentsStore.getState().componentDrafts[editingComponentId]
-        : currentPageId
-          ? usePagesStore.getState().draftsByPageId[currentPageId]?.layers
-          : null;
-
-      if (!currentLayers) return;
-
-      const cleanedLayers = resetBindingsOnCollectionSourceChange(currentLayers, layerId);
-      if (cleanedLayers !== currentLayers) {
-        if (editingComponentId) {
-          useComponentsStore.getState().updateComponentDraft(editingComponentId, cleanedLayers);
-        } else if (currentPageId) {
-          setDraftLayers(currentPageId, cleanedLayers);
-        }
-      }
-    }, 0);
+    resetChildBindings(selectedLayerId);
   };
 
   // Get current value for dynamic page source dropdown
@@ -2156,9 +2129,9 @@ const RightSidebar = React.memo(function RightSidebar({
                 onToggle={() => setCollectionBindingOpen(!collectionBindingOpen)}
               >
                 <div className="flex flex-col gap-2">
-                  {/* Source Selector */}
+                  {/* Collection Selector */}
                   <div className="grid grid-cols-3">
-                    <Label variant="muted">Source</Label>
+                    <Label variant="muted">Collection</Label>
                     <div className="col-span-2 *:w-full">
                       {/* When inside a parent collection, show reference fields, multi-asset fields, and inverse reference fields as source options */}
                       {parentCollectionLayer ? (
