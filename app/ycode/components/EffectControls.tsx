@@ -303,35 +303,39 @@ const EffectControls = memo(function EffectControls({ layer, onLayerUpdate, acti
 
   // Convert any color format to rgba
   const convertToRgba = (color: string): string => {
-    // If already rgba, return as is
     if (color.startsWith('rgba')) return color;
     if (color.startsWith('rgb')) {
-      // Convert rgb to rgba by adding opacity 1
       return color.replace('rgb(', 'rgba(').replace(')', ',1)');
     }
 
-    // Convert HEX to rgba
-    const hex = color.replace('#', '');
     let r: number, g: number, b: number, a = 1;
 
+    // Handle #hex/opacity format from ColorPicker (e.g. #000000/50)
+    const hexOpacityMatch = color.match(/^#([0-9a-fA-F]{6})\/(\d+)$/);
+    if (hexOpacityMatch) {
+      r = parseInt(hexOpacityMatch[1].substring(0, 2), 16);
+      g = parseInt(hexOpacityMatch[1].substring(2, 4), 16);
+      b = parseInt(hexOpacityMatch[1].substring(4, 6), 16);
+      a = parseInt(hexOpacityMatch[2]) / 100;
+      return `rgba(${r},${g},${b},${a})`;
+    }
+
+    const hex = color.replace('#', '');
+
     if (hex.length === 8) {
-      // 8-char hex with alpha
       r = parseInt(hex.substring(0, 2), 16);
       g = parseInt(hex.substring(2, 4), 16);
       b = parseInt(hex.substring(4, 6), 16);
       a = parseInt(hex.substring(6, 8), 16) / 255;
     } else if (hex.length === 6) {
-      // 6-char hex
       r = parseInt(hex.substring(0, 2), 16);
       g = parseInt(hex.substring(2, 4), 16);
       b = parseInt(hex.substring(4, 6), 16);
     } else if (hex.length === 3) {
-      // 3-char hex
       r = parseInt(hex[0] + hex[0], 16);
       g = parseInt(hex[1] + hex[1], 16);
       b = parseInt(hex[2] + hex[2], 16);
     } else {
-      // Fallback
       return 'rgba(0,0,0,1)';
     }
 
