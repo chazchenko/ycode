@@ -129,7 +129,6 @@ interface LayerRowProps {
   selectedLayerId: string | null;
   liveLayerUpdates?: UseLiveLayerUpdatesReturn | null;
   liveComponentUpdates?: UseLiveComponentUpdatesReturn | null;
-  scrollToSelected?: boolean;
   activeBreakpoint: Breakpoint;
   isRenaming: boolean;
   onRenameStart: (id: string) => void;
@@ -172,7 +171,6 @@ const LayerRow = React.memo(function LayerRow({
   selectedLayerId,
   liveLayerUpdates,
   liveComponentUpdates,
-  scrollToSelected,
   activeBreakpoint,
   isRenaming,
   onRenameStart,
@@ -203,8 +201,6 @@ const LayerRow = React.memo(function LayerRow({
     disabled: isRenaming,
   });
 
-  // Ref for scrolling to this element
-  const rowRef = React.useRef<HTMLDivElement>(null);
   const renameInputRef = React.useRef<HTMLInputElement>(null);
   const renameReadyRef = React.useRef(false);
 
@@ -235,19 +231,7 @@ const LayerRow = React.memo(function LayerRow({
   const setRefs = (element: HTMLDivElement | null) => {
     setDragRef(element);
     setDropRef(element);
-    rowRef.current = element;
   };
-
-  // Auto-scroll to this row when it becomes selected (from canvas click)
-  React.useEffect(() => {
-    if (isSelected && scrollToSelected && rowRef.current) {
-      rowRef.current.scrollIntoView({
-        behavior: 'auto', // Instant jump for immediate feedback
-        block: 'center', // Center in viewport to avoid sticky header
-        inline: 'nearest',
-      });
-    }
-  }, [isSelected, scrollToSelected]);
 
   const hasChildren = node.layer.children && node.layer.children.length > 0;
   const isCollapsed = node.collapsed || false;
@@ -646,7 +630,7 @@ const LayerRow = React.memo(function LayerRow({
                   : cn(
                     'opacity-0 group-hover:opacity-40',
                     isSelected ? 'group-hover:opacity-60' : '',
-                    'hover:!opacity-100'
+                    'hover:opacity-100!'
                   ),
               )}
               aria-label={node.layer.settings?.hidden ? 'Show element' : 'Hide element'}
@@ -1216,7 +1200,6 @@ export default function LayersTree({
   }, []);
 
   const ROW_HEIGHT = 32;
-
   const virtualizer = useVirtualizer({
     count: flattenedNodes.length,
     getScrollElement: () => scrollContainerRef.current,
@@ -1224,14 +1207,52 @@ export default function LayersTree({
     overscan: 20,
   });
 
-  // Scroll to selected layer using the virtualizer
+  // Scroll to selected layer only if not already visible
   useEffect(() => {
-    if (shouldScrollToSelected && selectedLayerId) {
-      const idx = flattenedNodes.findIndex(n => n.id === selectedLayerId);
-      if (idx >= 0) {
-        virtualizer.scrollToIndex(idx, { align: 'center' });
+    if (!shouldScrollToSelected || !selectedLayerId) return;
+
+    const idx = flattenedNodes.findIndex(n => n.id === selectedLayerId);
+    if (idx < 0) return;
+
+    const scrollEl = scrollContainerRef.current;
+    if (!scrollEl) {
+      virtualizer.scrollToIndex(idx, { align: 'center', behavior: 'smooth' });
+      return;
+    }
+
+    const SCROLL_MARGIN = 64;
+    const virtualItems = virtualizer.getVirtualItems();
+    const item = virtualItems.find(v => v.index === idx);
+
+    if (item) {
+      const wrapperTop = wrapperRef.current?.getBoundingClientRect().top ?? 0;
+      const scrollTop = scrollEl.getBoundingClientRect().top;
+      const itemScreenTop = wrapperTop + item.start;
+      const viewTop = scrollTop + SCROLL_MARGIN;
+      const viewBottom = scrollTop + scrollEl.clientHeight - SCROLL_MARGIN;
+
+      if (itemScreenTop >= viewTop && itemScreenTop + ROW_HEIGHT <= viewBottom) {
+        return;
       }
     }
+
+    // Jump to item first so virtualizer renders it, then center manually
+    const isAbove = idx * ROW_HEIGHT < scrollEl.scrollTop;
+    virtualizer.scrollToIndex(idx, { align: isAbove ? 'start' : 'end' });
+
+    const timeout = setTimeout(() => {
+      const wrapperEl = wrapperRef.current;
+      if (!wrapperEl || !scrollEl) return;
+
+      const wrapperRect = wrapperEl.getBoundingClientRect();
+      const scrollRect = scrollEl.getBoundingClientRect();
+      const wrapperOffset = wrapperRect.top - scrollRect.top + scrollEl.scrollTop;
+      const itemTop = wrapperOffset + idx * ROW_HEIGHT;
+      const targetScroll = itemTop - (scrollEl.clientHeight / 2) + (ROW_HEIGHT / 2);
+      scrollEl.scrollTo({ top: Math.max(0, targetScroll), behavior: 'smooth' });
+    }, 100);
+
+    return () => clearTimeout(timeout);
   }, [shouldScrollToSelected, selectedLayerId, flattenedNodes, virtualizer]);
 
   // Pull hover state management from editor store
@@ -1878,7 +1899,7 @@ export default function LayersTree({
     });
 
     return result;
-  }, [flattenedNodes, selectedLayerIds, selectedLayerId, collapsedIds, storeActiveSublayerIndex, storeActiveTextStyleKey]);
+  }, [flattenedNodes, selectedLayerIds, selectedLayerId, collapsedIds, storeActiveSublayerIndex, storeActiveTextStyleKey, storeActiveListItemIndex]);
 
   return (
     <DndContext
@@ -1925,7 +1946,6 @@ export default function LayersTree({
                 selectedLayerId={selectedLayerId}
                 liveLayerUpdates={liveLayerUpdates}
                 liveComponentUpdates={liveComponentUpdates}
-                scrollToSelected={shouldScrollToSelected}
                 activeBreakpoint={activeBreakpoint}
                 isRenaming={renamingLayerId === node.id}
                 onRenameStart={handleRenameStart}

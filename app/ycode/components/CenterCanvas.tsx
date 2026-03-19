@@ -761,6 +761,94 @@ const CenterCanvas = React.memo(function CenterCanvas({
     }
   }, [viewportMode, autofit]);
 
+  // Scroll canvas to selected element if it's off-screen
+  const prevCanvasLayerIdRef = useRef<string | null>(null);
+  const isInitialScrollRef = useRef(true);
+
+  const scrollCanvasToLayer = useCallback((layerId: string, smooth: boolean, force = false) => {
+    const scrollEl = scrollContainerRef.current;
+    if (!canvasIframeElement || !scrollEl) return;
+
+    const iframeDoc = canvasIframeElement.contentDocument;
+    if (!iframeDoc) return;
+
+    const el = iframeDoc.querySelector(`[data-layer-id="${layerId}"]`) as HTMLElement;
+    if (!el) return;
+
+    const elRect = el.getBoundingClientRect();
+    const iframeRect = canvasIframeElement.getBoundingClientRect();
+    const zoomScale = zoom / 100;
+    const elTopInScroll = iframeRect.top - scrollEl.getBoundingClientRect().top + scrollEl.scrollTop + elRect.top * zoomScale;
+    const elBottomInScroll = elTopInScroll + elRect.height * zoomScale;
+    const viewTop = scrollEl.scrollTop;
+    const viewBottom = scrollEl.scrollTop + scrollEl.clientHeight;
+
+    if (!force && elTopInScroll >= viewTop && elBottomInScroll <= viewBottom) return;
+
+    const elScaledHeight = elRect.height * zoomScale;
+    const fitsInView = elScaledHeight <= scrollEl.clientHeight;
+    const targetScroll = fitsInView
+      ? elTopInScroll - (scrollEl.clientHeight / 2) + (elScaledHeight / 2)
+      : elTopInScroll;
+    scrollEl.scrollTo({ top: Math.max(0, targetScroll), behavior: smooth ? 'smooth' : 'auto' });
+  }, [canvasIframeElement, zoom]);
+
+  useEffect(() => {
+    if (!selectedLayerId) {
+      prevCanvasLayerIdRef.current = null;
+      return;
+    }
+
+    if (!canvasIframeElement || !isCanvasReady) return;
+
+    if (prevCanvasLayerIdRef.current === selectedLayerId) return;
+    prevCanvasLayerIdRef.current = selectedLayerId;
+
+    const isInitial = isInitialScrollRef.current;
+    isInitialScrollRef.current = false;
+
+    let attempts = 0;
+    const maxAttempts = 20;
+    const delay = isInitial ? 200 : 50;
+
+    const tryScroll = () => {
+      const iframeDoc = canvasIframeElement.contentDocument;
+      const el = iframeDoc?.querySelector(`[data-layer-id="${selectedLayerId}"]`) as HTMLElement | null;
+      if (!el) {
+        attempts++;
+        if (attempts < maxAttempts) {
+          timeoutId = window.setTimeout(tryScroll, 100);
+        }
+        return;
+      }
+      scrollCanvasToLayer(selectedLayerId, !isInitial);
+    };
+
+    let timeoutId = window.setTimeout(tryScroll, delay);
+
+    return () => clearTimeout(timeoutId);
+  }, [selectedLayerId, canvasIframeElement, isCanvasReady, scrollCanvasToLayer]);
+
+  // Re-scroll when content height changes during initial load (images loading shifts layout)
+  const canvasReadyTimeRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (isCanvasReady && !canvasReadyTimeRef.current) {
+      canvasReadyTimeRef.current = Date.now();
+    }
+  }, [isCanvasReady]);
+
+  useEffect(() => {
+    if (!selectedLayerId || !canvasIframeElement || !isCanvasReady || !reportedContentHeight) return;
+
+    const readyTime = canvasReadyTimeRef.current;
+    if (!readyTime || Date.now() - readyTime > 5000) return;
+
+    const timeout = setTimeout(() => {
+      scrollCanvasToLayer(selectedLayerId, false, true);
+    }, 100);
+    return () => clearTimeout(timeout);
+  }, [reportedContentHeight, selectedLayerId, canvasIframeElement, isCanvasReady, scrollCanvasToLayer]);
+
   // Recalculate zoom when content height becomes ready in preview mode
   const hasRecalculatedForContent = useRef(false);
   useEffect(() => {
