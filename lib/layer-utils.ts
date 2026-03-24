@@ -2717,7 +2717,7 @@ function resetLayerVariableBindings(variables: LayerVariables | undefined, ctx: 
 
   // --- Design color bindings ---
   if (updated.design) {
-    const designKeys = ['backgroundColor', 'color', 'borderColor', 'divideColor', 'textDecorationColor'] as const;
+    const designKeys = ['backgroundColor', 'color', 'borderColor', 'divideColor', 'outlineColor', 'textDecorationColor'] as const;
     let designChanged = false;
     const newDesign = { ...updated.design };
 
@@ -3147,7 +3147,7 @@ function stripPageSourceFromVariables(variables: LayerVariables): LayerVariables
 
   // Design color bindings
   if (updated.design) {
-    const designKeys = ['backgroundColor', 'color', 'borderColor', 'divideColor', 'textDecorationColor'] as const;
+    const designKeys = ['backgroundColor', 'color', 'borderColor', 'divideColor', 'outlineColor', 'textDecorationColor'] as const;
     let designChanged = false;
     const newDesign = { ...updated.design };
     for (const key of designKeys) {
@@ -3449,7 +3449,7 @@ function resetVariablesForCollectionLayer(variables: LayerVariables, collectionL
 
   // --- Design color bindings ---
   if (updated.design) {
-    const designKeys = ['backgroundColor', 'color', 'borderColor', 'divideColor', 'textDecorationColor'] as const;
+    const designKeys = ['backgroundColor', 'color', 'borderColor', 'divideColor', 'outlineColor', 'textDecorationColor'] as const;
     let designChanged = false;
     const newDesign = { ...updated.design };
 
@@ -3755,7 +3755,7 @@ function resetVariablesForDeletedField(variables: LayerVariables, deletedFieldId
 
   // --- Design color bindings ---
   if (updated.design) {
-    const designKeys = ['backgroundColor', 'color', 'borderColor', 'divideColor', 'textDecorationColor'] as const;
+    const designKeys = ['backgroundColor', 'color', 'borderColor', 'divideColor', 'outlineColor', 'textDecorationColor'] as const;
     let designChanged = false;
     const newDesign = { ...updated.design };
 
