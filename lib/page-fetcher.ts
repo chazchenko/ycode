@@ -30,10 +30,23 @@ import { getSettingByKey } from '@/lib/repositories/settingsRepository';
 import { parseMultiAssetFieldValue, buildAssetVirtualValues } from '@/lib/multi-asset-utils';
 import { parseMultiReferenceValue } from '@/lib/collection-utils';
 import { combineBgValues, mergeStaticBgVars } from '@/lib/tailwind-class-mapper';
+import { buildMapEmbedHtml, DEFAULT_MAP_SETTINGS } from '@/lib/map-utils';
+import { getMapboxAccessToken } from '@/lib/map-server';
 import { getAssetsByIds } from '@/lib/repositories/assetRepository';
 import { isVirtualAssetField, findDisplayField } from '@/lib/collection-field-utils';
 import type { FieldVariable, AssetVariable, DynamicTextVariable } from '@/types';
 import type { DesignColorVariable } from '@/types';
+
+// Cached Mapbox access token for synchronous use inside layerToHtml.
+// Set by ensureMapboxToken() before HTML generation begins.
+let _cachedMapboxToken: string | null = null;
+
+async function ensureMapboxToken(): Promise<string | null> {
+  if (_cachedMapboxToken === null) {
+    _cachedMapboxToken = (await getMapboxAccessToken()) || '';
+  }
+  return _cachedMapboxToken || null;
+}
 
 /**
  * Create the appropriate variable for an asset field value.
@@ -2534,6 +2547,9 @@ export async function renderCollectionItemsToHtml(
   // Get timezone setting for date formatting
   const htmlTimezone = (await getSettingByKey('timezone') as string | null) || 'UTC';
 
+  // Pre-fetch Mapbox token for map layers in HTML export
+  await ensureMapboxToken();
+
   // Render each item using the template
   const renderedItems = await Promise.all(
     items.map(async (item, index) => {
@@ -3455,6 +3471,22 @@ function layerToHtml(
         : '';
       return `<iframe${attrsStr}>${childrenHtml}</iframe>`;
     }
+  }
+
+  // Handle Map layers (Mapbox GL JS iframe)
+  if (layer.name === 'map') {
+    const mapSettings = layer.settings?.map || DEFAULT_MAP_SETTINGS;
+    const mapToken = _cachedMapboxToken;
+
+    if (mapToken) {
+      const mapHtml = buildMapEmbedHtml(mapSettings, mapToken);
+      const escapedSrcdoc = escapeHtml(mapHtml);
+      const attrsStr = attrs.length > 0 ? ' ' + attrs.join(' ') : '';
+      return `<div${attrsStr}><iframe srcdoc="${escapedSrcdoc}" sandbox="allow-scripts" style="width:100%;height:100%;border:none;display:block" title="Map"></iframe></div>`;
+    }
+
+    const attrsStr = attrs.length > 0 ? ' ' + attrs.join(' ') : '';
+    return `<div${attrsStr}></div>`;
   }
 
   // Handle video (variables structure)

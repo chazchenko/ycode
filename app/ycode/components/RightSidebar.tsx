@@ -48,6 +48,7 @@ import FormSettings from './FormSettings';
 import FilterSettings from './FilterSettings';
 import AlertSettings from './AlertSettings';
 import HTMLEmbedSettings from './HTMLEmbedSettings';
+import MapSettings from './MapSettings';
 import SliderSettings from './SliderSettings';
 import LightboxSettings from './LightboxSettings';
 import InputSettings from './InputSettings';
@@ -2545,6 +2546,11 @@ const RightSidebar = React.memo(function RightSidebar({
             />
 
             <HTMLEmbedSettings
+              layer={selectedLayer}
+              onLayerUpdate={handleLayerUpdate}
+            />
+
+            <MapSettings
               layer={selectedLayer}
               onLayerUpdate={handleLayerUpdate}
             />

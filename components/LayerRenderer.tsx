@@ -12,6 +12,7 @@ import type { Layer, Locale, ComponentVariable, FormSettings, LinkSettings, Brea
 import type { UseLiveLayerUpdatesReturn } from '@/hooks/use-live-layer-updates';
 import type { UseLiveComponentUpdatesReturn } from '@/hooks/use-live-component-updates';
 import { getLayerHtmlTag, getClassesString, getText, resolveFieldValue, isTextEditable, isTextContentLayer, isRichTextLayer, getCollectionVariable, evaluateVisibility, findAncestorByName, filterDisabledSliderLayers, getLayerCmsFieldBinding } from '@/lib/layer-utils';
+import { buildMapEmbedHtml, DEFAULT_MAP_SETTINGS } from '@/lib/map-utils';
 import { SWIPER_CLASS_MAP, SWIPER_DATA_ATTR_MAP } from '@/lib/templates/utilities';
 import { useCanvasSlider } from '@/hooks/use-canvas-slider';
 import { resolveFieldFromSources } from '@/lib/cms-variables-utils';
@@ -444,7 +445,8 @@ const LayerItem: React.FC<{
   }, [ancestorComponentIds, layer.componentId]);
   const getAssetFromStore = useAssetsStore((state) => state.getAsset);
   const assetsById = useAssetsStore((state) => state.assetsById);
-  const timezone = useSettingsStore((state) => state.settingsByKey.timezone as string | null) ?? 'UTC';
+  const settingsByKey = useSettingsStore((state) => state.settingsByKey);
+  const timezone = (settingsByKey.timezone as string | null) ?? 'UTC';
 
   // Create asset resolver that checks pre-resolved assets first (SSR), then falls back to store
   const getAsset = useCallback((id: string) => {
@@ -2249,6 +2251,53 @@ const LayerItem: React.FC<{
           }}
           title={`Code Embed ${layer.id}`}
         />
+      );
+    }
+
+    // Handle Map layers - Mapbox GL JS iframe
+    if (layer.name === 'map') {
+      const mapToken = settingsByKey.mapbox_access_token as string | undefined;
+      const mapSettings = layer.settings?.map || DEFAULT_MAP_SETTINGS;
+
+      if (!mapToken) {
+        return (
+          <div
+            data-layer-id={layer.id}
+            data-layer-type="map"
+            className={fullClassName}
+            style={mergedStyle}
+            {...(isEditMode && !isEditing ? elementProps : {})}
+          >
+            <div className="flex items-center justify-center h-full bg-muted text-muted-foreground text-xs">
+              Mapbox token not configured
+            </div>
+          </div>
+        );
+      }
+
+      const mapHtml = buildMapEmbedHtml(mapSettings, mapToken);
+
+      return (
+        <div
+          data-layer-id={layer.id}
+          data-layer-type="map"
+          className={fullClassName}
+          style={mergedStyle}
+          {...(isEditMode && !isEditing ? elementProps : {})}
+        >
+          <iframe
+            srcDoc={mapHtml}
+            sandbox="allow-scripts"
+            className={isEditMode ? 'pointer-events-none' : ''}
+            style={{
+              width: '100%',
+              height: '100%',
+              border: 'none',
+              display: 'block',
+            }}
+            title="Map"
+          />
+        </div>
       );
     }
 

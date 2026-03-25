@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useSearchParams, usePathname } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
@@ -97,7 +98,7 @@ function AppCard({ app, onOpenSettings }: AppCardProps) {
           alt={`${app.name} logo`}
           width={24}
           height={24}
-          className="object-contain"
+          className="object-contain rounded-sm"
         />
       </div>
 
@@ -128,6 +129,9 @@ function AppCard({ app, onOpenSettings }: AppCardProps) {
 // =============================================================================
 
 export default function AppsPage() {
+  const searchParams = useSearchParams();
+  const pathname = usePathname();
+
   // App list state
   const [apps, setApps] = useState<AppWithStatus[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -143,6 +147,14 @@ export default function AppsPage() {
   const [isSavingKey, setIsSavingKey] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isLoadingSettings, setIsLoadingSettings] = useState(false);
+
+  // Mapbox state
+  const [mapboxToken, setMapboxToken] = useState('');
+  const [savedMapboxToken, setSavedMapboxToken] = useState('');
+  const [isSavingMapbox, setIsSavingMapbox] = useState(false);
+  const [isMapboxConnected, setIsMapboxConnected] = useState(false);
+  const [isLoadingMapbox, setIsLoadingMapbox] = useState(false);
+  const [showMapboxDisconnect, setShowMapboxDisconnect] = useState(false);
 
   // Connections state
   const [connections, setConnections] = useState<MailerLiteConnection[]>([]);
@@ -170,6 +182,12 @@ export default function AppsPage() {
   // Delete connection state
   const [connectionToDelete, setConnectionToDelete] = useState<MailerLiteConnection | null>(null);
 
+  const updateAppStatus = (appId: string, connected: boolean) => {
+    setApps((prev) =>
+      prev.map((a) => (a.id === appId ? { ...a, connected } : a))
+    );
+  };
+
   // =========================================================================
   // Load apps on mount
   // =========================================================================
@@ -177,6 +195,15 @@ export default function AppsPage() {
   useEffect(() => {
     fetchApps();
   }, []);
+
+  // Auto-open app settings from ?app= query param (e.g. /ycode/integrations/apps?app=mapbox)
+  useEffect(() => {
+    if (isLoading) return;
+    const appParam = searchParams.get('app');
+    if (appParam && apps.some((a) => a.id === appParam)) {
+      openAppSettings(appParam);
+    }
+  }, [isLoading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fetchApps = async () => {
     try {
@@ -198,15 +225,19 @@ export default function AppsPage() {
 
   const openAppSettings = (appId: string) => {
     setSelectedAppId(appId);
+    window.history.replaceState(null, '', `${pathname}?app=${appId}`);
 
     if (appId === 'mailerlite') {
       loadMailerLiteSettings();
       loadGroupsAndForms();
+    } else if (appId === 'mapbox') {
+      loadMapboxSettings();
     }
   };
 
   const closeAppSettings = () => {
     setSelectedAppId(null);
+    window.history.replaceState(null, '', pathname);
     // Reset MailerLite state
     setApiKey('');
     setSavedApiKey('');
@@ -214,6 +245,10 @@ export default function AppsPage() {
     setConnections([]);
     setExpandedConnectionId(null);
     resetConnectionForm();
+    // Reset Mapbox state
+    setMapboxToken('');
+    setSavedMapboxToken('');
+    setIsMapboxConnected(false);
   };
 
   // =========================================================================
@@ -285,10 +320,7 @@ export default function AppsPage() {
         setSavedApiKey(apiKey.trim());
         setIsConnected(true);
         toast.success('API key saved');
-        // Update app status in the list
-        setApps((prev) =>
-          prev.map((a) => (a.id === 'mailerlite' ? { ...a, connected: true } : a))
-        );
+        updateAppStatus('mailerlite', true);
       } else {
         toast.error(result.error || 'Failed to save API key');
       }
@@ -311,11 +343,70 @@ export default function AppsPage() {
       setConnections([]);
       setShowDisconnectDialog(false);
       toast.success('MailerLite disconnected');
-      // Update app status in the list
-      setApps((prev) =>
-        prev.map((a) => (a.id === 'mailerlite' ? { ...a, connected: false } : a))
-      );
+      updateAppStatus('mailerlite', false);
     } catch (error) {
+      toast.error('Failed to disconnect');
+    }
+  };
+
+  // =========================================================================
+  // Mapbox settings
+  // =========================================================================
+
+  const loadMapboxSettings = async () => {
+    setIsLoadingMapbox(true);
+    try {
+      const response = await fetch('/ycode/api/apps/mapbox/settings');
+      const result = await response.json();
+
+      if (result.data?.access_token) {
+        setSavedMapboxToken(result.data.access_token);
+        setMapboxToken(result.data.access_token);
+        setIsMapboxConnected(true);
+      }
+    } catch (error) {
+      console.error('Failed to load Mapbox settings:', error);
+    } finally {
+      setIsLoadingMapbox(false);
+    }
+  };
+
+  const handleSaveMapboxToken = async () => {
+    if (!mapboxToken.trim()) return;
+
+    setIsSavingMapbox(true);
+    try {
+      const response = await fetch('/ycode/api/apps/mapbox/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: mapboxToken.trim() }),
+      });
+
+      if (response.ok) {
+        setSavedMapboxToken(mapboxToken.trim());
+        setIsMapboxConnected(true);
+        updateAppStatus('mapbox', true);
+        toast.success('Mapbox token saved');
+      } else {
+        toast.error('Failed to save token');
+      }
+    } catch {
+      toast.error('Failed to save token');
+    } finally {
+      setIsSavingMapbox(false);
+    }
+  };
+
+  const handleDisconnectMapbox = async () => {
+    try {
+      await fetch('/ycode/api/apps/mapbox/settings', { method: 'DELETE' });
+      setMapboxToken('');
+      setSavedMapboxToken('');
+      setIsMapboxConnected(false);
+      setShowMapboxDisconnect(false);
+      updateAppStatus('mapbox', false);
+      toast.success('Mapbox disconnected');
+    } catch {
       toast.error('Failed to disconnect');
     }
   };
@@ -687,9 +778,9 @@ export default function AppsPage() {
   // Derived data
   const connectedApps = apps.filter((app) => app.connected);
   const connectedIds = new Set(connectedApps.map((app) => app.id));
-  const filteredApps = apps.filter(
-    (app) => !connectedIds.has(app.id) && app.categories.includes(selectedCategory)
-  );
+  const filteredApps = apps
+    .filter((app) => !connectedIds.has(app.id) && app.categories.includes(selectedCategory))
+    .sort((a, b) => Number(b.implemented) - Number(a.implemented));
 
   if (isLoading) {
     return (
@@ -739,7 +830,7 @@ export default function AppsPage() {
               value={selectedCategory}
               onValueChange={(value) => setSelectedCategory(value as AppCategory)}
             >
-              <SelectTrigger className="w-[140px] h-8 text-xs">
+              <SelectTrigger className="w-35 h-8 text-xs">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -781,6 +872,74 @@ export default function AppsPage() {
         }}
       >
         <SheetContent className="sm:max-w-lg overflow-y-auto">
+          {selectedAppId === 'mapbox' && (
+            <>
+              <SheetHeader>
+                <SheetTitle className="mr-auto">
+                  Mapbox
+                </SheetTitle>
+                <SheetDescription className="sr-only">
+                  Mapbox integration settings
+                </SheetDescription>
+              </SheetHeader>
+
+              {isLoadingMapbox ? (
+                <div className="flex items-center justify-center py-12">
+                  <Spinner />
+                </div>
+              ) : (
+                <div className="mt-6 space-y-8">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <FieldLegend>Access Token</FieldLegend>
+                      {isMapboxConnected && (
+                        <Button
+                          variant="secondary"
+                          size="xs"
+                          onClick={() => setShowMapboxDisconnect(true)}
+                        >
+                          Disconnect
+                        </Button>
+                      )}
+                    </div>
+                    <FieldDescription>
+                      Required for Map elements. Get your token from the{' '}
+                      <a
+                        href="https://account.mapbox.com/access-tokens/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-foreground underline"
+                      >
+                        Mapbox dashboard
+                      </a>.
+                    </FieldDescription>
+
+                    <Field>
+                      <FieldLabel htmlFor="mapbox-token">Access Token</FieldLabel>
+                      <Input
+                        id="mapbox-token"
+                        type="password"
+                        placeholder="pk.eyJ1Ijo..."
+                        value={mapboxToken}
+                        onChange={(e) => setMapboxToken(e.target.value)}
+                        className="font-mono text-xs"
+                      />
+                      <div className="flex gap-2 mt-2">
+                        <Button
+                          size="sm"
+                          onClick={handleSaveMapboxToken}
+                          disabled={!mapboxToken.trim() || mapboxToken === savedMapboxToken || isSavingMapbox}
+                        >
+                          {isSavingMapbox ? 'Saving...' : 'Save'}
+                        </Button>
+                      </div>
+                    </Field>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
           {selectedAppId === 'mailerlite' && (
             <>
               <SheetHeader>
@@ -1016,6 +1175,19 @@ export default function AppsPage() {
         confirmVariant="destructive"
         onConfirm={handleDisconnect}
         onCancel={() => setShowDisconnectDialog(false)}
+      />
+
+      {/* Mapbox Disconnect Confirmation Dialog */}
+      <ConfirmDialog
+        open={showMapboxDisconnect}
+        onOpenChange={setShowMapboxDisconnect}
+        title="Disconnect Mapbox?"
+        description="This will remove your access token. Map elements will stop rendering until a new token is configured."
+        confirmLabel="Disconnect"
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        onConfirm={handleDisconnectMapbox}
+        onCancel={() => setShowMapboxDisconnect(false)}
       />
 
       {/* Delete Connection Confirmation Dialog */}

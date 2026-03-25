@@ -1006,7 +1006,7 @@ export function canHaveChildren(layer: Layer, childLayerType?: string): boolean 
     'icon', 'image', 'audio', 'video', 'iframe',
     'heading', 'text', 'richText', 'span', 'label', 'hr',
     'input', 'textarea', 'select', 'checkbox', 'radio',
-    'htmlEmbed',
+    'htmlEmbed', 'map',
   ];
 
   // Sections cannot contain other sections
@@ -1522,6 +1522,11 @@ export function getLayerHtmlTag(layer: Layer): string {
 
   // Slider sub-layers always render as divs
   if (isSliderLayerName(layer.name)) {
+    return 'div';
+  }
+
+  // Map layers render as a wrapper div (iframe inside)
+  if (layer.name === 'map') {
     return 'div';
   }
 

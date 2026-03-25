@@ -225,6 +225,18 @@ export interface LayerSettings {
   selectOptionsMode?: 'list' | 'sort_by' | 'sort_order'; // Builder source mode for select options
   sortByCollectionId?: string; // Collection to source sort-by field options from
   sortByFieldIds?: string[]; // Which field IDs are enabled as sort-by options
+  map?: MapSettings; // Map-specific settings (only for map layers)
+}
+
+export type MapStyle = 'streets' | 'satellite' | 'light' | 'dark' | 'outdoors';
+
+export interface MapSettings {
+  latitude: number;
+  longitude: number;
+  zoom: number;
+  style: MapStyle;
+  showMarker: boolean;
+  interactive: boolean;
 }
 
 // Layer Style Types
