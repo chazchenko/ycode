@@ -1780,14 +1780,16 @@ export async function resolveCollectionLayers(
               sortedItems = items.sort((a, b) => {
                 const aValue = a.values[sortBy] || '';
                 const bValue = b.values[sortBy] || '';
-                const aNum = parseFloat(String(aValue));
-                const bNum = parseFloat(String(bValue));
+                const aStr = String(aValue);
+                const bStr = String(bValue);
+                const aNum = aStr.trim() !== '' ? Number(aStr) : NaN;
+                const bNum = bStr.trim() !== '' ? Number(bStr) : NaN;
 
                 if (!isNaN(aNum) && !isNaN(bNum)) {
                   return sortOrder === 'desc' ? bNum - aNum : aNum - bNum;
                 }
 
-                const comparison = String(aValue).localeCompare(String(bValue));
+                const comparison = aStr.localeCompare(bStr);
                 return sortOrder === 'desc' ? -comparison : comparison;
               });
             }
