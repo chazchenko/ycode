@@ -272,6 +272,7 @@ export default async function Page({ params }: PageProps) {
           layers={errorPageLayers.layers || []}
           components={errorComponents}
           generatedCss={globalSettings.publishedCss || undefined}
+          globalCustomCodeHead={globalSettings.globalCustomCodeHead}
           globalCustomCodeBody={globalSettings.globalCustomCodeBody}
         />
       );
@@ -306,6 +307,7 @@ export default async function Page({ params }: PageProps) {
             layers={errorPageLayers.layers || []}
             components={errorComponents}
             generatedCss={globalSettings.publishedCss || undefined}
+            globalCustomCodeHead={globalSettings.globalCustomCodeHead}
             globalCustomCodeBody={globalSettings.globalCustomCodeBody}
             passwordProtection={{
               pageId: protection.protectedBy === 'page' ? protection.protectedById : undefined,
@@ -349,6 +351,7 @@ export default async function Page({ params }: PageProps) {
       availableLocales={availableLocales}
       translations={translations}
       gaMeasurementId={globalSettings.gaMeasurementId}
+      globalCustomCodeHead={globalSettings.globalCustomCodeHead}
       globalCustomCodeBody={globalSettings.globalCustomCodeBody}
       ycodeBadge={globalSettings.ycodeBadge}
     />

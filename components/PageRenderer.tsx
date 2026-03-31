@@ -117,6 +117,7 @@ interface PageRendererProps {
   isPreview?: boolean;
   translations?: Record<string, any> | null;
   gaMeasurementId?: string | null;
+  globalCustomCodeHead?: string | null;
   globalCustomCodeBody?: string | null;
   ycodeBadge?: boolean;
   passwordProtection?: PasswordProtectionContext;
@@ -156,6 +157,7 @@ export default async function PageRenderer({
   isPreview = false,
   translations,
   gaMeasurementId,
+  globalCustomCodeHead,
   globalCustomCodeBody,
   ycodeBadge = true,
   passwordProtection,
@@ -335,6 +337,11 @@ export default async function PageRenderer({
 
   return (
     <>
+      {/* In cloud mode, layout skips global head code (ISR compat) — inject it here instead */}
+      {process.env.SKIP_SETUP === 'true' && globalCustomCodeHead && (
+        <HeadCodeInjector html={globalCustomCodeHead} id="global-head" />
+      )}
+
       {/* Inject page-specific custom head code (client-side via useEffect) */}
       {pageCustomCodeHead && <HeadCodeInjector html={pageCustomCodeHead} id="page-head" />}
 
