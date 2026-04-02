@@ -60,6 +60,7 @@ import type { CollectionField } from '@/types';
 interface AirtableSettingsProps {
   onDisconnect: () => void;
   onConnectionChange: (connected: boolean) => void;
+  onCloseAndNavigate?: (path: string) => void;
 }
 
 interface NewConnectionForm {
@@ -111,6 +112,7 @@ function updateMappingList(
 export default function AirtableSettings({
   onDisconnect,
   onConnectionChange,
+  onCloseAndNavigate,
 }: AirtableSettingsProps) {
   const router = useRouter();
 
@@ -432,6 +434,12 @@ export default function AirtableSettings({
     try {
       await airtableApi.sync(connectionId);
       await refreshConnections();
+      const conn = connections.find((c) => c.id === connectionId);
+      if (conn) {
+        const store = useCollectionsStore.getState();
+        const q = store.lastItemsQuery[conn.collectionId] || {};
+        store.loadItems(conn.collectionId, q.page, q.limit, q.sortBy, q.sortOrder);
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Sync failed');
     } finally {
@@ -673,7 +681,13 @@ export default function AirtableSettings({
                 onSync={() => handleSync(conn.id)}
                 onSetupWebhook={() => handleSetupWebhook(conn.id)}
                 onDelete={() => setConnectionToDelete(conn)}
-                onGoToCollection={() => router.push(`/ycode/collections/${conn.collectionId}`)}
+                onGoToCollection={() => {
+                  if (onCloseAndNavigate) {
+                    onCloseAndNavigate(`/ycode/collections/${conn.collectionId}`);
+                  } else {
+                    router.push(`/ycode/collections/${conn.collectionId}`);
+                  }
+                }}
                 onStartEdit={() => handleStartEdit(conn)}
                 onCancelEdit={handleCancelEdit}
                 onSaveEdit={handleSaveEdit}

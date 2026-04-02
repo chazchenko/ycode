@@ -42,7 +42,7 @@ import { useEditorStore } from '@/stores/useEditorStore';
 import { useAssetsStore } from '@/stores/useAssetsStore';
 import { useLiveCollectionUpdates } from '@/hooks/use-live-collection-updates';
 import { useResourceLock } from '@/hooks/use-resource-lock';
-import { slugify, normalizeBooleanValue } from '@/lib/collection-utils';
+import { slugify, normalizeBooleanValue, parseMultiReferenceValue } from '@/lib/collection-utils';
 import { isAssetFieldType, isMultipleAssetField, getFileManagerCategory, getAssetFieldLabel, getAssetFieldTypeLabel, isValidAssetForField, findStatusFieldId } from '@/lib/collection-field-utils';
 import type { StatusAction } from '@/lib/collection-field-utils';
 import { CollectionStatusPill, parseStatusValue } from './CollectionStatusPill';
@@ -576,6 +576,14 @@ export default function CollectionItemSheet({
                       <FormItem>
                         <div className="flex items-center gap-2">
                           <FormLabel>{field.name}</FormLabel>
+                          {(field.type === 'multi_reference') && (() => {
+                            const ids = parseMultiReferenceValue(formField.value);
+                            return ids.length > 0 ? (
+                              <span className="text-[10px] text-muted-foreground leading-none">
+                                {ids.length} item{ids.length !== 1 ? 's' : ''} selected
+                              </span>
+                            ) : null;
+                          })()}
                           {isSynced && (
                             <span className="text-[10px] text-muted-foreground leading-none">
                               Synced from Airtable

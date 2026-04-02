@@ -16,7 +16,7 @@ import { getAppSettingValue, setAppSetting } from '@/lib/repositories/appSetting
 import { slugify } from '@/lib/collection-utils';
 import { isAssetFieldType, isMultipleAssetField } from '@/lib/collection-field-utils';
 import { uploadFile } from '@/lib/file-upload';
-import { getFieldsByCollectionId, createField } from '@/lib/repositories/collectionFieldRepository';
+import { getFieldsByCollectionId, getFieldsByKeyAcrossCollections, createField } from '@/lib/repositories/collectionFieldRepository';
 import {
   createItemsBulk,
   getItemsByCollectionId,
@@ -24,12 +24,13 @@ import {
 import {
   insertValuesBulk,
   getValuesByItemIds,
+  getValueMapByFieldIds,
 } from '@/lib/repositories/collectionItemValueRepository';
 
 import { listAllRecords, getWebhookPayloads } from './index';
 import { transformFieldValue } from './field-mapping';
 import type { AirtableConnection, AirtableRecord, SyncResult } from './types';
-import type { CollectionFieldType } from '@/types';
+import type { CollectionFieldType, CollectionField } from '@/types';
 
 export const APP_ID = 'airtable';
 const HIDDEN_FIELD_KEY = 'airtable_id';
@@ -233,6 +234,8 @@ interface SyncContext {
   /** Fingerprints of existing attachment data keyed by "recordId:fieldId" */
   attachmentFingerprintCache: Map<string, string>;
   autoFields: AutoFields;
+  /** Per-field resolvers that map Airtable record IDs to CMS item UUIDs for reference fields */
+  referenceResolvers: Map<string, Map<string, string>>;
 }
 
 interface SlugContext {
@@ -266,6 +269,70 @@ function attachmentFingerprint(rawValue: unknown): string {
       return `${att?.id ?? ''}|${att?.filename ?? ''}`;
     })
     .join(',');
+}
+
+/**
+ * Build resolvers that map Airtable record IDs to CMS item UUIDs for reference fields.
+ * Uses just 2 DB queries regardless of how many target collections are involved:
+ * 1. Find all `airtable_id` fields across target collections
+ * 2. Load all their values from `collection_item_values`
+ */
+async function buildReferenceResolvers(
+  fieldMapping: AirtableConnection['fieldMapping'],
+  fields: CollectionField[]
+): Promise<Map<string, Map<string, string>>> {
+  const resolvers = new Map<string, Map<string, string>>();
+
+  const refMappings = fieldMapping.filter(
+    (m) => m.airtableFieldType === 'multipleRecordLinks'
+      && (m.cmsFieldType === 'reference' || m.cmsFieldType === 'multi_reference')
+  );
+
+  if (refMappings.length === 0) return resolvers;
+
+  // Group by target collection to avoid loading the same collection twice
+  const collectionToCmsFields = new Map<string, string[]>();
+  for (const mapping of refMappings) {
+    const cmsField = fields.find((f) => f.id === mapping.cmsFieldId);
+    if (!cmsField?.reference_collection_id) continue;
+
+    const existing = collectionToCmsFields.get(cmsField.reference_collection_id) ?? [];
+    existing.push(mapping.cmsFieldId);
+    collectionToCmsFields.set(cmsField.reference_collection_id, existing);
+  }
+
+  const targetCollectionIds = Array.from(collectionToCmsFields.keys());
+  if (targetCollectionIds.length === 0) return resolvers;
+
+  // Query 1: find the airtable_id field in each target collection
+  const fieldsByCollection = await getFieldsByKeyAcrossCollections(HIDDEN_FIELD_KEY, targetCollectionIds);
+
+  const airtableIdFieldIds = Array.from(fieldsByCollection.values()).map((f) => f.id);
+  if (airtableIdFieldIds.length === 0) return resolvers;
+
+  // Query 2: load all airtable_id values across all target collections at once
+  const valuesByField = await getValueMapByFieldIds(airtableIdFieldIds);
+
+  // Build inverted lookups (airtableRecordId -> cmsItemId) per target collection
+  for (const [targetCollectionId, cmsFieldIds] of collectionToCmsFields) {
+    const airtableIdField = fieldsByCollection.get(targetCollectionId);
+    if (!airtableIdField) continue;
+
+    const itemValues = valuesByField.get(airtableIdField.id);
+    if (!itemValues || itemValues.size === 0) continue;
+
+    // Invert: value (airtable record ID) -> key (CMS item ID)
+    const lookup = new Map<string, string>();
+    for (const [cmsItemId, airtableRecordId] of itemValues) {
+      lookup.set(airtableRecordId, cmsItemId);
+    }
+
+    for (const cmsFieldId of cmsFieldIds) {
+      resolvers.set(cmsFieldId, lookup);
+    }
+  }
+
+  return resolvers;
 }
 
 /**
@@ -303,6 +370,22 @@ async function buildRecordValues(
 
       values[mapping.cmsFieldId] = await uploadAttachmentsAsAssets(rawValue, ctx.assetCache, isMultipleAsset);
       ctx.attachmentFingerprintCache.set(fpKey, fp);
+      continue;
+    }
+
+    // Resolve linked record IDs to CMS item UUIDs for reference fields
+    const resolver = ctx.referenceResolvers.get(mapping.cmsFieldId);
+    if (resolver) {
+      const airtableIds = Array.isArray(rawValue) ? rawValue as string[] : [];
+      const resolvedIds = airtableIds
+        .map((id) => resolver.get(id))
+        .filter((id): id is string => !!id);
+
+      if (mapping.cmsFieldType === 'reference') {
+        values[mapping.cmsFieldId] = resolvedIds[0] ?? null;
+      } else {
+        values[mapping.cmsFieldId] = resolvedIds.length > 0 ? JSON.stringify(resolvedIds) : '[]';
+      }
       continue;
     }
 
@@ -419,7 +502,7 @@ async function reconcileRecords(
   connection: AirtableConnection,
   airtableRecords: AirtableRecord[]
 ): Promise<SyncResult> {
-  const { collectionId, fieldMapping, recordIdFieldId } = connection;
+  const { collectionId, recordIdFieldId } = connection;
   const result: SyncResult = { created: 0, updated: 0, deleted: 0, errors: [], syncedAt: new Date().toISOString() };
 
   // Load fields concurrently with items (independent queries)
@@ -427,6 +510,10 @@ async function reconcileRecords(
     getItemsByCollectionId(collectionId),
     getFieldsByCollectionId(collectionId),
   ]);
+
+  // Filter out mappings targeting deleted fields
+  const activeFieldIds = new Set(fields.map((f) => f.id));
+  const fieldMapping = connection.fieldMapping.filter((m) => activeFieldIds.has(m.cmsFieldId));
 
   const existingItemIds = existingItems.map((item) => item.id);
   const existingValues = existingItemIds.length > 0
@@ -476,6 +563,9 @@ async function reconcileRecords(
     Object.entries(connection.attachmentFingerprints ?? {})
   );
 
+  // Build reference resolvers for linked record fields
+  const referenceResolvers = await buildReferenceResolvers(fieldMapping, fields);
+
   // Build shared sync context — passed to every buildRecordValues call
   const ctx: SyncContext = {
     fieldMapping,
@@ -485,6 +575,7 @@ async function reconcileRecords(
     attachmentFieldIds,
     attachmentFingerprintCache: prevFingerprints,
     autoFields,
+    referenceResolvers,
   };
 
   // Index: airtableRecordId -> cmsItemId

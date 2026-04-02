@@ -108,6 +108,9 @@ export function isFieldTypeCompatible(
   const mediaTypes: CollectionFieldType[] = ['audio', 'video', 'document'];
   if (mediaTypes.includes(cmsType) && (airtableType === 'multipleAttachments' || airtableType === 'url')) return true;
 
+  // reference / multi_reference accept linked records
+  if ((cmsType === 'reference' || cmsType === 'multi_reference') && airtableType === 'multipleRecordLinks') return true;
+
   return false;
 }
 
