@@ -15,6 +15,18 @@ import { getTiptapTextContent } from '@/lib/text-format-utils';
 import { escapeHtml } from '@/lib/escape-html';
 import { normalizeV3ToV4, resolveNamedColors } from '@/lib/tailwind-normalizer';
 
+/** Returns the URL only if it's absolute, otherwise undefined (relative paths become placeholders). */
+function resolveAbsoluteUrl(url: string): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'data:') {
+      return url;
+    }
+  } catch { /* relative path */ }
+  return undefined;
+}
+
 // ─── Tag → Layer Name Mapping ───
 
 const TAG_TO_LAYER_NAME: Record<string, string> = {
@@ -501,8 +513,11 @@ function isTextOnlyElement(el: Element): boolean {
   for (let i = 0; i < el.childNodes.length; i++) {
     const node = el.childNodes[i];
     if (node.nodeType === Node.ELEMENT_NODE) {
-      const tag = (node as Element).tagName.toLowerCase();
+      const child = node as Element;
+      const tag = child.tagName.toLowerCase();
       if (tag !== 'br' && !INLINE_TEXT_TAGS.has(tag)) return false;
+      // Inline wrappers (e.g. <a>) may contain block-level elements like <img>
+      if (INLINE_TEXT_TAGS.has(tag) && !isTextOnlyElement(child)) return false;
     }
   }
   return true;
@@ -630,17 +645,18 @@ function elementToLayer(el: Element): Layer | null {
   }
 
   if (tag === 'img') {
-    const src = el.getAttribute('src');
+    const rawSrc = el.getAttribute('src');
     const alt = el.getAttribute('alt');
-    if (src) {
-      layer.variables = {
-        ...layer.variables,
-        image: {
-          src: { type: 'dynamic_text', data: { content: src } },
-          alt: { type: 'dynamic_text', data: { content: alt || '' } },
-        },
-      };
-    }
+    const absoluteSrc = rawSrc ? resolveAbsoluteUrl(rawSrc) : undefined;
+    layer.variables = {
+      ...layer.variables,
+      image: {
+        src: absoluteSrc
+          ? { type: 'dynamic_text', data: { content: absoluteSrc } }
+          : { type: 'asset', data: { asset_id: '' } },
+        alt: { type: 'dynamic_text', data: { content: alt || '' } },
+      },
+    };
     const width = el.getAttribute('width');
     const height = el.getAttribute('height');
     if (width || height) {
@@ -699,12 +715,12 @@ function elementToLayer(el: Element): Layer | null {
   }
 
   if (tag === 'iframe') {
-    const src = el.getAttribute('src');
-    if (src) {
+    const iframeSrc = resolveAbsoluteUrl(el.getAttribute('src') || '');
+    if (iframeSrc) {
       layer.variables = {
         ...layer.variables,
         iframe: {
-          src: { type: 'dynamic_text', data: { content: src } },
+          src: { type: 'dynamic_text', data: { content: iframeSrc } },
         },
       };
     }
@@ -712,12 +728,12 @@ function elementToLayer(el: Element): Layer | null {
   }
 
   if (tag === 'video' || tag === 'audio') {
-    const src = el.getAttribute('src');
-    if (src) {
+    const mediaSrc = resolveAbsoluteUrl(el.getAttribute('src') || '');
+    if (mediaSrc) {
       layer.variables = {
         ...layer.variables,
         [tag]: {
-          src: { type: 'dynamic_text', data: { content: src } },
+          src: { type: 'dynamic_text', data: { content: mediaSrc } },
         },
       };
     }
@@ -733,6 +749,9 @@ function elementToLayer(el: Element): Layer | null {
 
   if (tag === 'svg') {
     sanitizeSvg(el);
+    // Strip class/style already extracted to the icon layer's design properties
+    el.removeAttribute('class');
+    el.removeAttribute('style');
     const svgString = el.outerHTML;
     layer.variables = {
       ...layer.variables,
@@ -753,9 +772,15 @@ function elementToLayer(el: Element): Layer | null {
   if (isTextLayer && isTextOnlyElement(el)) {
     const doc = buildRichTextDoc(el);
     const hasContent = doc.content[0].content.length > 0;
+    if (!hasContent) {
+      // Empty text elements (e.g. decorative <span>) become div layers
+      layer.name = 'div';
+      layer.children = [];
+      return layer;
+    }
     layer.variables = {
       ...layer.variables,
-      text: makeRichTextVariable(hasContent ? doc : LAYER_NAME_LABELS[layerName] || ''),
+      text: makeRichTextVariable(doc),
     };
     return layer;
   }
@@ -809,6 +834,7 @@ function elementToLayer(el: Element): Layer | null {
 /**
  * Parse an HTML string into a Ycode Layer tree.
  * Converts Tailwind classes to design properties.
+ * Absolute image/media URLs are preserved; relative paths become placeholders.
  */
 export function htmlToLayers(html: string): Layer[] {
   if (typeof window === 'undefined') return [];
