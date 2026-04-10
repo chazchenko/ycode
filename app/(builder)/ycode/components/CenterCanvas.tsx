@@ -839,20 +839,16 @@ const CenterCanvas = React.memo(function CenterCanvas({
   const shouldCenter = zoom < zoomToFitLevel;
 
   // Calculate final iframe height - ensure it fills the visible canvas at any zoom level
-  // When zoomed out (e.g. 52%), the iframe must be taller so that scaled it still fills the canvas
-  // When switching viewports (Desktop → Phone), zoom changes and this recalculates automatically
+  // When zoomed in or at fit level, stretch the iframe so the scaled result fills the canvas.
+  // When zoomed out beyond fit, use content height directly — centering handles the gap.
   const finalIframeHeight = useMemo(() => {
-    // For component editing, use content-based height directly (don't force-fill container)
     if (editingComponentId) return iframeContentHeight;
-
     if (!containerHeight || zoom <= 0) return iframeContentHeight;
+    if (shouldCenter) return iframeContentHeight;
 
-    // Minimum iframe height so that scaled iframe fills the visible canvas area
     const minHeightForZoom = (containerHeight - CANVAS_PADDING) / (zoom / 100);
-
-    // Use the larger of: content height or minimum height for current zoom
     return Math.max(iframeContentHeight, minHeightForZoom);
-  }, [iframeContentHeight, containerHeight, zoom, editingComponentId]);
+  }, [iframeContentHeight, containerHeight, zoom, editingComponentId, shouldCenter]);
 
   const previewObserverRef = useRef<ResizeObserver | null>(null);
 
@@ -2681,7 +2677,7 @@ const CenterCanvas = React.memo(function CenterCanvas({
             </div>
           )}
           <div
-            className="bg-white shadow-3xl relative mx-auto"
+            className="bg-white shadow-3xl relative mx-auto my-auto"
             style={{
               zoom: previewZoom / 100,
               width: viewportMode === 'desktop' && previewZoomMode === 'autofit'
