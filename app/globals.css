@@ -264,8 +264,13 @@
   @apply border-t border-border my-4;
 }
 
+.rich-text-editor-full.ProseMirror .tableWrapper {
+  @apply overflow-x-auto max-w-full min-w-0 my-2;
+  width: 100%;
+}
+
 .rich-text-editor-full.ProseMirror table {
-  @apply w-full border-separate border-spacing-0 my-2 border border-border rounded-lg overflow-hidden;
+  @apply w-full border-separate border-spacing-0 border border-border rounded-lg overflow-hidden;
 }
 
 .rich-text-editor-full.ProseMirror th,

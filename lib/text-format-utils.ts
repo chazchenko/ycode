@@ -902,12 +902,16 @@ function renderBlock(
 
     const tbodyProps: Record<string, any> = { key: `${key}-tbody` };
     const tableClass = getTextStyleClasses(textStyles, 'table');
-    const tableProps: Record<string, any> = { key };
+    const tableProps: Record<string, any> = { key: `${key}-table` };
     if (tableClass) tableProps.className = tableClass;
     if (isEditMode) tableProps['data-style'] = 'table';
 
-    return React.createElement('table', tableProps,
-      React.createElement('tbody', tbodyProps, rows)
+    return React.createElement(
+      'div',
+      { key, className: 'overflow-x-auto max-w-full' },
+      React.createElement('table', tableProps,
+        React.createElement('tbody', tbodyProps, rows)
+      )
     );
   }
 

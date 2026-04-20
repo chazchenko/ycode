@@ -3276,7 +3276,7 @@ function renderTiptapToHtml(
     const tableClass = mergedStyles?.table?.classes || '';
     const classAttr = tableClass ? ` class="${escapeHtml(tableClass)}"` : '';
 
-    return `<table${classAttr}><tbody>${rows}</tbody></table>`;
+    return `<div class="overflow-x-auto max-w-full"><table${classAttr}><tbody>${rows}</tbody></table></div>`;
   }
 
   if (content.type === 'tableRow') {

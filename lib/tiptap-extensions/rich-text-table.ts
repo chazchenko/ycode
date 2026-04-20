@@ -19,6 +19,20 @@ declare module '@tiptap/core' {
 export const RichTextTable = Table.extend({
   name: 'table',
 
+  addOptions() {
+    const parent = this.parent?.();
+    return {
+      HTMLAttributes: parent?.HTMLAttributes ?? {},
+      resizable: parent?.resizable ?? false,
+      renderWrapper: true,
+      handleWidth: parent?.handleWidth ?? 5,
+      cellMinWidth: parent?.cellMinWidth ?? 25,
+      View: parent?.View ?? null,
+      lastColumnResizable: parent?.lastColumnResizable ?? true,
+      allowTableNodeSelection: parent?.allowTableNodeSelection ?? false,
+    };
+  },
+
   addCommands() {
     return {
       ...this.parent?.(),
