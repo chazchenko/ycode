@@ -738,11 +738,31 @@ function buildSublayersFromDoc(doc: any, layer: Layer): RichTextSublayer[] {
       const children: RichTextSublayer[] = [];
 
       if (type === 'table') {
-        children.push(
-          { type: 'tableHeader', label: 'Table Header Cell', icon: 'table-cell', kind: 'style' as const, styleKey: 'tableHeader' },
-          { type: 'tableCell', label: 'Table Cell', icon: 'table-cell', kind: 'style' as const, styleKey: 'tableCell' },
-          { type: 'tableRow', label: 'Table Row', icon: 'table-row', kind: 'style' as const, styleKey: 'tableRow' },
-        );
+        const tableContent = Array.isArray(block.content) ? block.content : [];
+        tableContent.forEach((row: any, rowIdx: number) => {
+          if (row.type !== 'tableRow') return;
+          const rowCells: RichTextSublayer[] = [];
+          const rowCellsRaw = Array.isArray(row.content) ? row.content : [];
+          rowCellsRaw.forEach((cell: any, cellIdx: number) => {
+            if (cell.type !== 'tableCell' && cell.type !== 'tableHeader') return;
+            const isHeader = cell.type === 'tableHeader';
+            rowCells.push({
+              type: cell.type,
+              label: isHeader ? `Header ${cellIdx + 1}` : `Cell ${cellIdx + 1}`,
+              icon: 'table-cell',
+              kind: 'style' as const,
+              styleKey: isHeader ? 'tableHeader' : 'tableCell',
+            });
+          });
+          children.push({
+            type: 'tableRow',
+            label: `Row ${rowIdx + 1}`,
+            icon: 'table-row',
+            kind: 'style' as const,
+            styleKey: 'tableRow',
+            children: rowCells.length > 0 ? rowCells : undefined,
+          });
+        });
       }
 
       const isList = type === 'bulletList' || type === 'orderedList';
